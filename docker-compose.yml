@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  github-radar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: github-radar:latest
+    container_name: github-radar
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/config.yaml:/etc/github-radar/config.yaml:ro
+      - github-radar-data:/data
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - OTEL_ENDPOINT=${OTEL_ENDPOINT:-http://localhost:4318}
+      - DT_API_TOKEN=${DT_API_TOKEN:-}
+    command:
+      - serve
+      - --config
+      - /etc/github-radar/config.yaml
+      - --state
+      - /data/state.json
+      - --interval
+      - "24h"
+      - --http-addr
+      - ":8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  github-radar-data:
+    driver: local

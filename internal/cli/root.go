@@ -100,6 +100,12 @@ func (c *CLI) runCommand(cmd string, args []string) int {
 	case "discover":
 		discoverCmd := NewDiscoverCmd(c)
 		return discoverCmd.Run(args)
+	case "serve":
+		serveCmd := NewServeCmd(c)
+		return serveCmd.Run(args)
+	case "status":
+		statusCmd := NewStatusCmd(c)
+		return statusCmd.Run(args)
 	case "help":
 		c.printHelp()
 		return 0
@@ -147,6 +153,11 @@ Commands:
   discover           Discover trending repositories by topic
                      Options: --topics, --min-stars, --max-age, --threshold,
                               --auto-track, --format <table|json|csv>
+  serve              Start the daemon for scheduled scanning
+                     Options: --interval <duration>, --http-addr <addr>,
+                              --state <path>
+  status             Show daemon status
+                     Options: --addr <url>, --format <text|json>
   config validate    Validate configuration file
   config show        Display current configuration
   help               Show this help message
