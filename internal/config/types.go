@@ -27,9 +27,12 @@ type GithubConfig struct {
 
 // OtelConfig contains OpenTelemetry export settings.
 type OtelConfig struct {
-	Endpoint    string            `yaml:"endpoint"`
-	Headers     map[string]string `yaml:"headers"`
-	ServiceName string            `yaml:"service_name"`
+	Endpoint       string            `yaml:"endpoint"`
+	Headers        map[string]string `yaml:"headers"`
+	ServiceName    string            `yaml:"service_name"`
+	ServiceVersion string            `yaml:"service_version"`
+	FlushTimeout   int               `yaml:"flush_timeout"` // seconds, default 10
+	Attributes     map[string]string `yaml:"attributes"`    // additional resource attributes
 }
 
 // DiscoveryConfig contains trend discovery settings.

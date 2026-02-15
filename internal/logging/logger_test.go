@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 )
 
 func TestNew_JSONFormat(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, false)
+	logger := New(&buf, slog.LevelInfo)
 
 	logger.Info("test message", "key", "value")
 
@@ -40,41 +41,41 @@ func TestNew_JSONFormat(t *testing.T) {
 	}
 }
 
-func TestNew_VerboseEnablesDebug(t *testing.T) {
+func TestNew_DebugLevel(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, true) // verbose = true
+	logger := New(&buf, slog.LevelDebug)
 
 	logger.Debug("debug message")
 	logger.Info("info message")
 
 	output := buf.String()
 	if !strings.Contains(output, "debug message") {
-		t.Error("verbose mode should include DEBUG messages")
+		t.Error("DEBUG level should include DEBUG messages")
 	}
 	if !strings.Contains(output, "info message") {
-		t.Error("verbose mode should include INFO messages")
+		t.Error("DEBUG level should include INFO messages")
 	}
 }
 
-func TestNew_NonVerboseFiltersDebug(t *testing.T) {
+func TestNew_InfoLevelFiltersDebug(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, false) // verbose = false
+	logger := New(&buf, slog.LevelInfo)
 
 	logger.Debug("debug message")
 	logger.Info("info message")
 
 	output := buf.String()
 	if strings.Contains(output, "debug message") {
-		t.Error("non-verbose mode should NOT include DEBUG messages")
+		t.Error("INFO level should NOT include DEBUG messages")
 	}
 	if !strings.Contains(output, "info message") {
-		t.Error("non-verbose mode should include INFO messages")
+		t.Error("INFO level should include INFO messages")
 	}
 }
 
 func TestLogLevels(t *testing.T) {
 	var buf bytes.Buffer
-	logger := New(&buf, true) // Enable all levels
+	logger := New(&buf, slog.LevelDebug) // Enable all levels
 
 	logger.Debug("debug")
 	logger.Info("info")
@@ -96,6 +97,34 @@ func TestLogLevels(t *testing.T) {
 		if entry["level"] != expectedLevels[i] {
 			t.Errorf("line %d: level = %v, want %s", i, entry["level"], expectedLevels[i])
 		}
+	}
+}
+
+func TestParseLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"DEBUG", slog.LevelDebug},
+		{"info", slog.LevelInfo},
+		{"INFO", slog.LevelInfo},
+		{"warn", slog.LevelWarn},
+		{"warning", slog.LevelWarn},
+		{"WARN", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"ERROR", slog.LevelError},
+		{"invalid", slog.LevelInfo},
+		{"", slog.LevelInfo},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := ParseLevel(tt.input)
+			if got != tt.want {
+				t.Errorf("ParseLevel(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -219,7 +248,7 @@ func TestAttributeNames_SnakeCase(t *testing.T) {
 
 func TestWith_CreatesChildLogger(t *testing.T) {
 	var buf bytes.Buffer
-	Logger = New(&buf, false)
+	Logger = New(&buf, slog.LevelInfo)
 
 	childLogger := With(AttrScanID, "test-scan")
 	childLogger.Info("child message")
@@ -243,13 +272,13 @@ func TestInit_SetsDefaultLogger(t *testing.T) {
 	defer func() { Logger = original }()
 
 	// Create logger with buffer and set it
-	Logger = New(&buf, true)
+	Logger = New(&buf, slog.LevelDebug)
 
 	// Use the package functions
 	Debug("test debug")
 
 	output := buf.String()
 	if !strings.Contains(output, "test debug") {
-		t.Error("Logger with verbose=true should enable DEBUG level")
+		t.Error("Logger with DEBUG level should enable DEBUG messages")
 	}
 }

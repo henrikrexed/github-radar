@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 )
 
 // Logger is the package-level logger instance.
@@ -12,17 +13,11 @@ var Logger *slog.Logger
 
 func init() {
 	// Default to INFO level, JSON format, stdout
-	Logger = New(os.Stdout, false)
+	Logger = New(os.Stdout, slog.LevelInfo)
 }
 
-// New creates a new JSON logger with the specified verbosity.
-// If verbose is true, DEBUG level is enabled; otherwise INFO level.
-func New(w io.Writer, verbose bool) *slog.Logger {
-	level := slog.LevelInfo
-	if verbose {
-		level = slog.LevelDebug
-	}
-
+// New creates a new JSON logger with the specified level.
+func New(w io.Writer, level slog.Level) *slog.Logger {
 	opts := &slog.HandlerOptions{
 		Level: level,
 	}
@@ -33,8 +28,38 @@ func New(w io.Writer, verbose bool) *slog.Logger {
 
 // Init initializes the package-level logger with the specified settings.
 func Init(verbose bool) {
-	Logger = New(os.Stdout, verbose)
+	level := slog.LevelInfo
+	if verbose {
+		level = slog.LevelDebug
+	}
+	Logger = New(os.Stdout, level)
 	slog.SetDefault(Logger)
+}
+
+// InitWithLevel initializes the logger with a specific level string.
+// Valid levels: debug, info, warn, error
+func InitWithLevel(levelStr string) {
+	level := ParseLevel(levelStr)
+	Logger = New(os.Stdout, level)
+	slog.SetDefault(Logger)
+}
+
+// ParseLevel parses a log level string to slog.Level.
+// Valid values: debug, info, warn, error (case-insensitive)
+// Returns slog.LevelInfo for invalid values.
+func ParseLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // Debug logs at DEBUG level.
