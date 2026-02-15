@@ -1,8 +1,21 @@
 ---
-stepsCompleted: [1, 2, 3]
+stepsCompleted: ['step-01-validate-prerequisites', 'step-02-design-epics', 'step-03-create-stories', 'step-04-final-validation']
+workflowStatus: complete
+completedAt: '2026-02-15'
 inputDocuments:
-  - prd.md
-  - architecture.md
+  - type: prd
+    path: prd.md
+    description: Complete PRD with 55 FRs, 20 NFRs for GitHub Radar CLI tool
+  - type: architecture
+    path: architecture.md
+    description: Architecture decisions - Go language, client/daemon separation
+  - type: feature-spec
+    path: feature-spec-category-classification.md
+    description: Post-MVP category classification feature specification
+workflowType: 'epics'
+project_name: 'GitHub Radar'
+user_name: 'Henrik.rexed'
+date: '2026-02-15'
 ---
 
 # GitHub Trend Scanner - Epic Breakdown
@@ -1301,4 +1314,816 @@ So that build commands are standardized.
 **And** `make docker` builds Docker image
 **And** `make release` cross-compiles all platforms
 **And** `make lint` runs go vet + staticcheck
+
+---
+
+# Post-MVP: Category Classification Feature
+
+The following epics implement the Category Classification feature as specified in feature-spec-category-classification.md.
+
+---
+
+## Epic 8: SQLite Database Foundation
+
+**User Outcome:** Operator has reliable, queryable storage that supports classification features while maintaining compatibility with existing CLI commands.
+
+**FRs Covered:** FR-C16, FR-C17, FR-C18
+
+---
+
+## Epic 9: LLM Category Classification
+
+**User Outcome:** System automatically classifies repositories into CNCF/cloud-native categories using local LLM, enabling operators to filter and route alerts by domain.
+
+**FRs Covered:** FR-C1, FR-C2, FR-C3, FR-C4, FR-C5, FR-C6
+
+---
+
+## Epic 10: Classification Overrides & Taxonomy Management
+
+**User Outcome:** Operator can exclude repos, force category overrides, and manage the category taxonomy via CLI, giving full control over classification behavior.
+
+**FRs Covered:** FR-C7, FR-C8, FR-C9, CLI-C1 through CLI-C9
+
+---
+
+## Epic 11: Self-Monitoring & Telemetry
+
+**User Outcome:** Operator can observe the scanner's health, LLM token usage, and resource consumption via their chosen observability backend.
+
+**FRs Covered:** FR-C13, FR-C14, FR-C15, CLI-C16 through CLI-C19
+
+---
+
+## Epic 12: Model Management & Benchmarking
+
+**User Outcome:** Operator can switch between LLM models (accuracy vs speed tradeoff) and benchmark classification performance to make informed decisions.
+
+**FRs Covered:** FR-C10, FR-C11, FR-C12, CLI-C12 through CLI-C15
+
+---
+
+## Post-MVP FR Coverage Map
+
+| FR | Epic | Description |
+|----|------|-------------|
+| FR-C1 | Epic 9 | Classify repos into 18 categories + other |
+| FR-C2 | Epic 9 | Use Ollama with qwen3 models |
+| FR-C3 | Epic 9 | Store category, confidence, readme_hash |
+| FR-C4 | Epic 9 | Reclassify when README hash changes |
+| FR-C5 | Epic 9 | Reclassify all when model changes |
+| FR-C6 | Epic 9 | Customizable prompts via config |
+| FR-C7 | Epic 10 | Exclude repos from classification |
+| FR-C8 | Epic 10 | Force category override |
+| FR-C9 | Epic 10 | Manage category taxonomy via CLI |
+| FR-C10 | Epic 12 | Support model switching |
+| FR-C11 | Epic 12 | Benchmark classification across models |
+| FR-C12 | Epic 12 | Benchmark outputs performance metrics |
+| FR-C13 | Epic 11 | Export host metrics via OTel |
+| FR-C14 | Epic 11 | Export LLM telemetry via OpenLLMetry |
+| FR-C15 | Epic 11 | User-configurable collector exporters |
+| FR-C16 | Epic 8 | Use SQLite for repo state |
+| FR-C17 | Epic 8 | Schema with classification columns |
+| FR-C18 | Epic 8 | Excluded repos remain in DB |
+| CLI-C1 | Epic 10 | scanner exclude list |
+| CLI-C2 | Epic 10 | scanner exclude add |
+| CLI-C3 | Epic 10 | scanner exclude remove |
+| CLI-C4 | Epic 10 | scanner category list-overrides |
+| CLI-C5 | Epic 10 | scanner category set |
+| CLI-C6 | Epic 10 | scanner category unset |
+| CLI-C7 | Epic 10 | scanner category list |
+| CLI-C8 | Epic 10 | scanner category add |
+| CLI-C9 | Epic 10 | scanner category remove |
+| CLI-C10 | Epic 9 | scanner classify |
+| CLI-C11 | Epic 9 | scanner classify test |
+| CLI-C12 | Epic 12 | scanner classify model |
+| CLI-C13 | Epic 12 | scanner classify model <name> |
+| CLI-C14 | Epic 12 | scanner benchmark --sample |
+| CLI-C15 | Epic 12 | scanner benchmark --compare |
+| CLI-C16 | Epic 11 | scanner telemetry status |
+| CLI-C17 | Epic 11 | scanner telemetry enable/disable |
+| CLI-C18 | Epic 11 | scanner telemetry exporters |
+| CLI-C19 | Epic 11 | scanner telemetry test |
+
+---
+
+## Epic 8: SQLite Database Foundation - Stories
+
+Operator has reliable, queryable storage that supports classification features while maintaining compatibility with existing CLI commands.
+
+### Story 8.1: Initialize SQLite Database Schema
+
+As an **operator**,
+I want the scanner to use SQLite for persistent storage,
+So that I have reliable, queryable data without external database services.
+
+**Acceptance Criteria:**
+
+**Given** the scanner is run for the first time
+**When** no database file exists
+**Then** SQLite database is created at configured path (default: `data/scanner.db`)
+**And** `repos` table is created with columns: id, full_name, owner, name, language, description, stars, forks, open_issues, open_prs, contributors, stars_prev, growth_score, star_velocity, star_acceleration, latest_release, latest_release_date, created_at, first_seen_at, last_collected_at, topics, status
+
+---
+
+### Story 8.2: Add Classification Columns to Schema
+
+As the **system**,
+I want classification-related columns in the repos table,
+So that category data can be stored alongside repo metrics.
+
+**Acceptance Criteria:**
+
+**Given** SQLite database exists
+**When** classification feature is enabled
+**Then** schema includes: primary_category, category_confidence, readme_hash, classified_at, model_used, force_category, excluded (INTEGER)
+**And** indexes exist on: primary_category, status, excluded
+
+---
+
+### Story 8.3: Migrate JSON State to SQLite
+
+As an **operator**,
+I want existing JSON state data migrated to SQLite,
+So that I don't lose historical data when upgrading.
+
+**Acceptance Criteria:**
+
+**Given** existing `state.json` file with repo data
+**When** scanner starts and detects JSON state but no SQLite
+**Then** data is migrated to SQLite repos table
+**And** JSON file is renamed to `state.json.migrated`
+**And** migration is logged at INFO level
+
+---
+
+### Story 8.4: Handle Excluded Repos in Database
+
+As the **system**,
+I want excluded repos to remain in database but be skipped,
+So that I can track exclusion history and re-enable repos later.
+
+**Acceptance Criteria:**
+
+**Given** a repo with `excluded=1` in database
+**When** collection or export runs
+**Then** repo is skipped in collection
+**And** repo is skipped in metrics export
+**And** repo remains in database with all historical data
+**And** `scanner list` shows excluded repos with `[excluded]` marker
+
+---
+
+## Epic 9: LLM Category Classification - Stories
+
+System automatically classifies repositories into CNCF/cloud-native categories using local LLM, enabling operators to filter and route alerts by domain.
+
+### Story 9.1: Load Classification Configuration
+
+As an **operator**,
+I want to configure classification settings via YAML,
+So that I can customize the LLM behavior without code changes.
+
+**Acceptance Criteria:**
+
+**Given** `config/classification.yaml` exists
+**When** classification service starts
+**Then** Ollama endpoint is loaded (default: `http://localhost:11434`)
+**And** model name is loaded (default: `qwen3:0.6b`)
+**And** category list is loaded (18 categories + `other`)
+**And** system_prompt and user_prompt templates are loaded
+**And** validation errors are logged clearly
+
+---
+
+### Story 9.2: Connect to Ollama LLM Service
+
+As the **system**,
+I want to communicate with Ollama for classification,
+So that repos can be categorized using local LLM.
+
+**Acceptance Criteria:**
+
+**Given** Ollama is running at configured endpoint
+**When** classification is triggered
+**Then** system connects to `/api/chat` endpoint
+**And** timeout is respected (default: 30s)
+**And** connection errors are logged with clear diagnostics
+**And** Ollama not running produces actionable error message
+
+---
+
+### Story 9.3: Fetch and Hash README Content
+
+As the **system**,
+I want to fetch README and compute hash,
+So that I can detect changes and avoid redundant classifications.
+
+**Acceptance Criteria:**
+
+**Given** a repo needs classification
+**When** README is fetched
+**Then** README content is retrieved from GitHub API
+**And** SHA256 hash is computed
+**And** content is truncated to 2000 characters
+**And** missing README is handled gracefully (use description only)
+
+---
+
+### Story 9.4: Classify Repository with LLM
+
+As the **system**,
+I want to send repo data to LLM for classification,
+So that repos are assigned to appropriate categories.
+
+**Acceptance Criteria:**
+
+**Given** repo data and README content
+**When** classification prompt is sent to Ollama
+**Then** prompt includes: repo_name, description, language, topics, README excerpt
+**And** LLM response is parsed as JSON: `{category, confidence, reasoning}`
+**And** category must be from allowed list or `other`
+**And** confidence is 0.0-1.0 float
+**And** malformed responses are logged and marked as `other` with low confidence
+
+---
+
+### Story 9.5: Store Classification Results
+
+As the **system**,
+I want to persist classification in database,
+So that category data is available for queries and export.
+
+**Acceptance Criteria:**
+
+**Given** LLM returns classification
+**When** result is stored
+**Then** primary_category is saved to repos table
+**And** category_confidence is saved
+**And** readme_hash is saved
+**And** classified_at timestamp is saved
+**And** model_used is saved (e.g., "qwen3:0.6b")
+**And** status is updated to 'classified'
+
+---
+
+### Story 9.6: Skip Classification When README Unchanged
+
+As the **system**,
+I want to skip LLM calls when README hasn't changed,
+So that I save resources and avoid redundant API calls.
+
+**Acceptance Criteria:**
+
+**Given** repo has existing readme_hash in database
+**When** current README hash matches stored hash
+**Then** classification is skipped
+**And** existing category is retained
+**And** log message indicates "skipped - no README change"
+
+---
+
+### Story 9.7: Trigger Reclassification on README Change
+
+As the **system**,
+I want to reclassify when README changes,
+So that category stays accurate as projects evolve.
+
+**Acceptance Criteria:**
+
+**Given** repo has existing classification
+**When** new README hash differs from stored hash
+**Then** status is set to 'needs_reclassify'
+**And** repo is included in next classification run
+**And** log indicates "README changed - queued for reclassification"
+
+---
+
+### Story 9.8: Implement Classify Command
+
+As an **operator**,
+I want to run classification via CLI,
+So that I can trigger classification on demand.
+
+**Acceptance Criteria:**
+
+**Given** repos in database with status='pending' or 'needs_reclassify'
+**When** `scanner classify` is run
+**Then** all pending repos are classified sequentially
+**And** progress is logged (X of Y repos)
+**And** summary shows: classified, skipped, failed counts
+**And** `--dry-run` shows what would be classified without calling LLM
+
+---
+
+### Story 9.9: Implement Classify Test Command
+
+As an **operator**,
+I want to test classification on a single repo,
+So that I can verify prompts and configuration work correctly.
+
+**Acceptance Criteria:**
+
+**Given** a repo identifier
+**When** `scanner classify test <owner/repo>` is run
+**Then** repo is fetched (from DB or GitHub if new)
+**And** classification is performed and displayed
+**And** result shows: category, confidence, reasoning, duration
+**And** result is NOT saved to database (test only)
+
+---
+
+## Epic 10: Classification Overrides & Taxonomy Management - Stories
+
+Operator can exclude repos, force category overrides, and manage the category taxonomy via CLI, giving full control over classification behavior.
+
+### Story 10.1: Implement Exclude List Command
+
+As an **operator**,
+I want to view all excluded repositories,
+So that I can see what's being skipped.
+
+**Acceptance Criteria:**
+
+**Given** repos with `excluded=1` in database
+**When** `scanner exclude list` is run
+**Then** all excluded repos are displayed in table format
+**And** output shows: repo name, excluded date, reason (if stored)
+**And** empty list shows "No excluded repositories"
+**And** `--format json` outputs JSON for scripting
+
+---
+
+### Story 10.2: Implement Exclude Add Command
+
+As an **operator**,
+I want to exclude a repository from tracking,
+So that irrelevant repos don't appear in my data.
+
+**Acceptance Criteria:**
+
+**Given** a repo identifier (owner/repo)
+**When** `scanner exclude add <owner/repo>` is run
+**Then** repo is marked `excluded=1` in database
+**And** if repo doesn't exist, placeholder row is created with `excluded=1`
+**And** success message confirms exclusion
+**And** already-excluded repo shows "already excluded" message
+
+---
+
+### Story 10.3: Implement Exclude Remove Command
+
+As an **operator**,
+I want to remove a repository from exclusion list,
+So that I can start tracking it again.
+
+**Acceptance Criteria:**
+
+**Given** an excluded repo
+**When** `scanner exclude remove <owner/repo>` is run
+**Then** repo is marked `excluded=0` in database
+**And** repo will be included in next collection
+**And** success message confirms removal
+**And** non-excluded repo shows "not in exclusion list" message
+
+---
+
+### Story 10.4: Implement Category List-Overrides Command
+
+As an **operator**,
+I want to view all manual category overrides,
+So that I can see which repos have forced categories.
+
+**Acceptance Criteria:**
+
+**Given** repos with `force_category` set in database
+**When** `scanner category list-overrides` is run
+**Then** all overridden repos are displayed
+**And** output shows: repo name, forced category, override date
+**And** empty list shows "No category overrides"
+
+---
+
+### Story 10.5: Implement Category Set Command
+
+As an **operator**,
+I want to force a category on a repository,
+So that I can correct LLM mistakes or pre-classify repos.
+
+**Acceptance Criteria:**
+
+**Given** a repo and category name
+**When** `scanner category set <owner/repo> <category>` is run
+**Then** `force_category` is set in database
+**And** category must be in allowed taxonomy
+**And** invalid category shows error with allowed list
+**And** repo is skipped by LLM classification (uses forced category)
+**And** if repo doesn't exist, placeholder row is created
+
+---
+
+### Story 10.6: Implement Category Unset Command
+
+As an **operator**,
+I want to remove a forced category override,
+So that the repo can be classified by LLM again.
+
+**Acceptance Criteria:**
+
+**Given** a repo with `force_category` set
+**When** `scanner category unset <owner/repo>` is run
+**Then** `force_category` is cleared (set to NULL)
+**And** repo status is set to 'needs_reclassify'
+**And** success message confirms override removed
+**And** repo without override shows "no override exists" message
+
+---
+
+### Story 10.7: Implement Category List Command
+
+As an **operator**,
+I want to view the allowed category taxonomy,
+So that I know what categories are available.
+
+**Acceptance Criteria:**
+
+**Given** categories defined in configuration
+**When** `scanner category list` is run
+**Then** all allowed categories are displayed
+**And** `other` is always shown (built-in)
+**And** count of repos per category is shown if `--counts` flag used
+
+---
+
+### Story 10.8: Implement Category Add Command
+
+As an **operator**,
+I want to add a new category to the taxonomy,
+So that I can expand classification for new domains.
+
+**Acceptance Criteria:**
+
+**Given** a new category name
+**When** `scanner category add <name>` is run
+**Then** category is added to configuration file
+**And** category name is validated (lowercase, alphanumeric, hyphens)
+**And** duplicate category shows error
+**And** success message confirms addition
+**And** config is reloaded
+
+---
+
+### Story 10.9: Implement Category Remove Command
+
+As an **operator**,
+I want to remove a category from the taxonomy,
+So that I can clean up unused categories.
+
+**Acceptance Criteria:**
+
+**Given** an existing category name
+**When** `scanner category remove <name>` is run
+**Then** category is removed from configuration file
+**And** `other` cannot be removed (built-in)
+**And** repos with that category are set to 'needs_reclassify'
+**And** `--force` required if repos exist with that category
+**And** success message confirms removal
+
+---
+
+## Epic 11: Self-Monitoring & Telemetry - Stories
+
+Operator can observe the scanner's health, LLM token usage, and resource consumption via their chosen observability backend.
+
+### Story 11.1: Configure Telemetry Settings
+
+As an **operator**,
+I want to configure self-monitoring via YAML,
+So that I can enable/disable telemetry and set my backend.
+
+**Acceptance Criteria:**
+
+**Given** `config/telemetry.yaml` exists
+**When** scanner starts
+**Then** telemetry enabled/disabled flag is loaded
+**And** host_metrics collection interval is configurable
+**And** llm_metrics enabled flag is loaded
+**And** disabled telemetry skips all monitoring setup
+
+---
+
+### Story 11.2: Deploy OTel Collector Sidecar Config
+
+As an **operator**,
+I want a pre-configured OTel Collector config,
+So that I can collect scanner metrics without manual setup.
+
+**Acceptance Criteria:**
+
+**Given** telemetry is enabled
+**When** scanner package is deployed
+**Then** `otel-collector-config.yaml` is provided
+**And** config includes hostmetrics receiver
+**And** config includes OTLP receiver for app metrics
+**And** config includes batch processor and resourcedetection
+**And** exporters section references user's `collector-exporters.yaml`
+
+---
+
+### Story 11.3: Collect Host Metrics
+
+As the **system**,
+I want to collect VM resource metrics,
+So that operators can monitor scanner infrastructure health.
+
+**Acceptance Criteria:**
+
+**Given** OTel Collector is running with hostmetrics receiver
+**When** collection interval elapses (default: 60s)
+**Then** `system.cpu.utilization` is collected
+**And** `system.memory.usage` is collected
+**And** `system.disk.io` is collected
+**And** `process.cpu.utilization` for scanner process is collected
+**And** `process.memory.usage` for scanner process is collected
+
+---
+
+### Story 11.4: Instrument LLM Calls with OpenLLMetry
+
+As the **system**,
+I want to capture LLM telemetry,
+So that operators can track classification performance and costs.
+
+**Acceptance Criteria:**
+
+**Given** classification calls Ollama
+**When** LLM request completes
+**Then** `llm.request.duration` histogram is recorded
+**And** `llm.tokens.prompt` counter is recorded
+**And** `llm.tokens.completion` counter is recorded
+**And** `llm.request.success` counter tracks success/failure
+**And** attributes include: model, repo, category
+
+---
+
+### Story 11.5: Create LLM Request Spans
+
+As the **system**,
+I want distributed traces for classification,
+So that operators can debug slow or failed classifications.
+
+**Acceptance Criteria:**
+
+**Given** classification is running
+**When** each repo is classified
+**Then** a span is created for the classification
+**And** span includes attributes: repo, model, category, confidence
+**And** span records duration
+**And** errors are recorded on span
+**And** spans link to parent scan span
+
+---
+
+### Story 11.6: Configure User Exporters
+
+As an **operator**,
+I want to define my own OTel exporter backend,
+So that metrics go to my preferred observability platform.
+
+**Acceptance Criteria:**
+
+**Given** `config/collector-exporters.yaml` exists
+**When** OTel Collector starts
+**Then** user-defined exporters are loaded
+**And** pipeline routing respects user config
+**And** multiple exporters are supported (primary + backup)
+**And** example configs provided for: Dynatrace, Grafana, Jaeger, Prometheus
+
+---
+
+### Story 11.7: Implement Telemetry Status Command
+
+As an **operator**,
+I want to check telemetry status,
+So that I know if monitoring is working.
+
+**Acceptance Criteria:**
+
+**Given** scanner is configured
+**When** `scanner telemetry status` is run
+**Then** shows: enabled/disabled status
+**And** shows: configured exporters
+**And** shows: last successful export timestamp
+**And** shows: collector health if running
+
+---
+
+### Story 11.8: Implement Telemetry Enable/Disable Commands
+
+As an **operator**,
+I want to toggle telemetry via CLI,
+So that I can quickly enable/disable monitoring.
+
+**Acceptance Criteria:**
+
+**Given** telemetry config exists
+**When** `scanner telemetry enable` is run
+**Then** telemetry.enabled is set to true in config
+**And** config is reloaded
+**When** `scanner telemetry disable` is run
+**Then** telemetry.enabled is set to false in config
+**And** config is reloaded
+
+---
+
+### Story 11.9: Implement Telemetry Exporters Command
+
+As an **operator**,
+I want to view and edit exporter configuration,
+So that I can manage where metrics are sent.
+
+**Acceptance Criteria:**
+
+**Given** exporter config exists
+**When** `scanner telemetry exporters` is run
+**Then** current exporter config is displayed
+**When** `scanner telemetry exporters --edit` is run
+**Then** config is opened in $EDITOR
+**And** config is validated after save
+**And** invalid config shows error and is not applied
+
+---
+
+### Story 11.10: Implement Telemetry Test Command
+
+As an **operator**,
+I want to test backend connectivity,
+So that I can verify my exporter config works.
+
+**Acceptance Criteria:**
+
+**Given** exporter config exists
+**When** `scanner telemetry test` is run
+**Then** test metrics are sent to each configured exporter
+**And** success/failure is reported per exporter
+**And** connection errors show clear diagnostics
+**And** authentication errors are clearly identified
+
+---
+
+## Epic 12: Model Management & Benchmarking - Stories
+
+Operator can switch between LLM models (accuracy vs speed tradeoff) and benchmark classification performance to make informed decisions.
+
+### Story 12.1: Implement Model Show Command
+
+As an **operator**,
+I want to see the current classification model,
+So that I know what's being used.
+
+**Acceptance Criteria:**
+
+**Given** classification is configured
+**When** `scanner classify model` is run
+**Then** current model name is displayed (e.g., "qwen3:0.6b")
+**And** model tier is shown (MVP/Production/High Accuracy)
+**And** estimated accuracy and resource requirements are shown
+
+---
+
+### Story 12.2: Implement Model Switch Command
+
+As an **operator**,
+I want to switch to a different LLM model,
+So that I can balance accuracy vs speed.
+
+**Acceptance Criteria:**
+
+**Given** a model name
+**When** `scanner classify model <name>` is run
+**Then** model is validated against allowed list (qwen3:0.6b, qwen3:1.7b, qwen3:4b)
+**And** if model not local, `ollama pull` is triggered
+**And** config file is updated with new model
+**And** all classified repos are marked `status='needs_reclassify'`
+**And** count of repos queued for reclassification is shown
+
+---
+
+### Story 12.3: Implement Model List Command
+
+As an **operator**,
+I want to see available models,
+So that I know my options.
+
+**Acceptance Criteria:**
+
+**Given** scanner is configured
+**When** `scanner classify model --list` is run
+**Then** all supported models are displayed with:
+**And** model name, estimated accuracy, RAM requirement, speed rating
+**And** currently active model is marked
+**And** locally available models are indicated
+
+---
+
+### Story 12.4: Implement Benchmark Sample Command
+
+As an **operator**,
+I want to benchmark classification on a sample,
+So that I can measure model performance.
+
+**Acceptance Criteria:**
+
+**Given** repos exist in database
+**When** `scanner benchmark --sample 50` is run
+**Then** random sample of N repos is selected
+**And** each repo is classified (or re-classified)
+**And** timing, token usage, and confidence are recorded
+**And** summary statistics are displayed:
+  - Average duration
+  - Average confidence
+  - Category distribution
+  - Low confidence count
+
+---
+
+### Story 12.5: Implement Benchmark Repos Command
+
+As an **operator**,
+I want to benchmark specific repos,
+So that I can test classification on known repos.
+
+**Acceptance Criteria:**
+
+**Given** specific repo identifiers
+**When** `scanner benchmark --repos owner/repo1,owner/repo2` is run
+**Then** specified repos are classified
+**And** results are displayed per repo
+**And** summary includes same metrics as sample benchmark
+
+---
+
+### Story 12.6: Implement Benchmark Compare Command
+
+As an **operator**,
+I want to compare models side-by-side,
+So that I can make informed model choices.
+
+**Acceptance Criteria:**
+
+**Given** multiple model names and sample size
+**When** `scanner benchmark --compare qwen3:0.6b,qwen3:1.7b --sample 30` is run
+**Then** same repos are classified with each model
+**And** results are displayed in comparison table:
+  - Model | Avg Duration | Avg Confidence | Accuracy Match
+**And** category agreement between models is shown
+**And** recommendation is provided based on results
+
+---
+
+### Story 12.7: Store Benchmark Results
+
+As the **system**,
+I want to persist benchmark results,
+So that operators can review historical performance.
+
+**Acceptance Criteria:**
+
+**Given** benchmark completes
+**When** results are generated
+**Then** JSON file is saved to `_bmad-output/benchmarks/benchmark-{timestamp}.json`
+**And** file includes: timestamp, model, sample_size, per-repo results, summary
+**And** `--no-save` flag skips file creation
+
+---
+
+### Story 12.8: Display Benchmark Report
+
+As an **operator**,
+I want a clear benchmark report,
+So that I can quickly understand results.
+
+**Acceptance Criteria:**
+
+**Given** benchmark completes
+**When** results are displayed
+**Then** report shows:
+```
+Model: qwen3:0.6b
+─────────────────────────────
+Repos tested:       50
+Avg duration:       1.2s
+Avg tokens:         312
+Category distribution:
+  kubernetes:       12 (24%)
+  observability:    8  (16%)
+  other:            6  (12%)  ← review these
+Confidence:
+  High (>0.8):      32 (64%)
+  Medium (0.5-0.8): 14 (28%)
+  Low (<0.5):       4  (8%)
+```
+**And** low-confidence repos are listed for review
+
+---
 
