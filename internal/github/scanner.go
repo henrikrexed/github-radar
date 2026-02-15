@@ -5,15 +5,17 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hrexed/github-radar/internal/scoring"
 	"github.com/hrexed/github-radar/internal/state"
 )
 
 // Scanner orchestrates repository data collection with state persistence.
 type Scanner struct {
-	client    *Client
-	collector *Collector
-	store     *state.Store
-	onLog     func(level, msg string, args ...interface{})
+	client     *Client
+	collector  *Collector
+	store      *state.Store
+	calculator *scoring.Calculator
+	onLog      func(level, msg string, args ...interface{})
 }
 
 // NewScanner creates a new scanner with the given client and state store.
@@ -21,10 +23,16 @@ func NewScanner(client *Client, store *state.Store) *Scanner {
 	collector := NewCollector(client)
 
 	return &Scanner{
-		client:    client,
-		collector: collector,
-		store:     store,
+		client:     client,
+		collector:  collector,
+		store:      store,
+		calculator: scoring.NewCalculatorWithDefaults(),
 	}
+}
+
+// SetScoringWeights sets custom scoring weights.
+func (s *Scanner) SetScoringWeights(weights scoring.Weights) {
+	s.calculator = scoring.NewCalculator(weights)
 }
 
 // SetLogger sets a logging callback.
@@ -149,23 +157,98 @@ func (s *Scanner) updateRepoState(owner, name string, result *CollectionResult, 
 
 	if result.Activity != nil {
 		newState.Contributors = result.Activity.Contributors
+		newState.MergedPRs7d = result.Activity.MergedPRs7d
+		newState.NewIssues7d = result.Activity.NewIssues7d
 	}
 
-	// Calculate velocities if we have previous data
+	// Build scoring metrics from current and previous data
+	metrics := scoring.RepoMetrics{
+		Stars:        newState.Stars,
+		Forks:        newState.Forks,
+		Contributors: newState.Contributors,
+		MergedPRs7d:  newState.MergedPRs7d,
+		NewIssues7d:  newState.NewIssues7d,
+	}
+
+	// Include previous state for velocity calculations
 	if prev != nil && !prev.LastCollected.IsZero() {
-		daysSince := result.Collected.Sub(prev.LastCollected).Hours() / 24
-		if daysSince > 0 {
-			// Star velocity (stars per day)
-			newState.StarsPrev = prev.Stars
-			starDelta := float64(newState.Stars - prev.Stars)
-			newState.StarVelocity = starDelta / daysSince
+		metrics.StarsPrev = prev.Stars
+		metrics.ContributorsPrev = prev.Contributors
+		metrics.DaysElapsed = result.Collected.Sub(prev.LastCollected).Hours() / 24
+		metrics.PrevStarVelocity = prev.StarVelocity
 
-			// Star acceleration (change in velocity)
-			newState.StarAcceleration = newState.StarVelocity - prev.StarVelocity
-		}
+		// Store previous values for reference
+		newState.StarsPrev = prev.Stars
+		newState.ContributorsPrev = prev.Contributors
 	}
+
+	// Calculate all velocities using the scoring calculator
+	velocities := s.calculator.CalculateVelocities(metrics)
+	newState.StarVelocity = velocities.StarVelocity
+	newState.StarAcceleration = velocities.StarAcceleration
+	newState.PRVelocity = velocities.PRVelocity
+	newState.IssueVelocity = velocities.IssueVelocity
+	newState.ContributorGrowth = velocities.ContributorGrowth
+
+	// Calculate raw growth score
+	newState.GrowthScore = s.calculator.CalculateRawScore(velocities)
 
 	s.store.SetRepoState(fullName, newState)
+}
+
+// NormalizeAllScores normalizes growth scores across all tracked repos.
+// This should be called after a scan to update normalized scores.
+func (s *Scanner) NormalizeAllScores() {
+	allStates := s.store.AllRepoStates()
+	if len(allStates) == 0 {
+		return
+	}
+
+	// Convert to scored repos for normalization
+	repos := make([]scoring.ScoredRepo, 0, len(allStates))
+	for fullName, repoState := range allStates {
+		repos = append(repos, scoring.ScoredRepo{
+			FullName: fullName,
+			RawScore: repoState.GrowthScore,
+		})
+	}
+
+	// Normalize scores
+	normalized := scoring.NormalizeScores(repos)
+
+	// Update state with normalized scores
+	for _, scored := range normalized {
+		if repoState := s.store.GetRepoState(scored.FullName); repoState != nil {
+			repoState.NormalizedGrowthScore = scored.NormalizedScore
+			s.store.SetRepoState(scored.FullName, *repoState)
+		}
+	}
+}
+
+// GetTopRepos returns the top N repos by normalized growth score.
+func (s *Scanner) GetTopRepos(n int) []scoring.ScoredRepo {
+	allStates := s.store.AllRepoStates()
+	if len(allStates) == 0 {
+		return nil
+	}
+
+	repos := make([]scoring.ScoredRepo, 0, len(allStates))
+	for fullName, repoState := range allStates {
+		repos = append(repos, scoring.ScoredRepo{
+			FullName: fullName,
+			Velocities: scoring.VelocityMetrics{
+				StarVelocity:      repoState.StarVelocity,
+				StarAcceleration:  repoState.StarAcceleration,
+				PRVelocity:        repoState.PRVelocity,
+				IssueVelocity:     repoState.IssueVelocity,
+				ContributorGrowth: repoState.ContributorGrowth,
+			},
+			RawScore:        repoState.GrowthScore,
+			NormalizedScore: repoState.NormalizedGrowthScore,
+		})
+	}
+
+	return scoring.TopN(repos, n)
 }
 
 // GetClient returns the underlying GitHub client.

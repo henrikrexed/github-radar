@@ -32,12 +32,27 @@ type RepoState struct {
 	StarsPrev        int       `json:"stars_prev"`
 	Forks            int       `json:"forks"`
 	Contributors     int       `json:"contributors"`
+	ContributorsPrev int       `json:"contributors_prev"`
 	LastCollected    time.Time `json:"last_collected"`
-	StarVelocity     float64   `json:"star_velocity"`
-	StarAcceleration float64   `json:"star_acceleration"`
-	GrowthScore      float64   `json:"growth_score"`
-	ETag             string    `json:"etag"`
-	LastModified     string    `json:"last_modified"`
+
+	// Velocity metrics
+	StarVelocity      float64 `json:"star_velocity"`
+	StarAcceleration  float64 `json:"star_acceleration"`
+	PRVelocity        float64 `json:"pr_velocity"`
+	IssueVelocity     float64 `json:"issue_velocity"`
+	ContributorGrowth float64 `json:"contributor_growth"`
+
+	// Activity metrics (7-day window)
+	MergedPRs7d int `json:"merged_prs_7d"`
+	NewIssues7d int `json:"new_issues_7d"`
+
+	// Scoring
+	GrowthScore           float64 `json:"growth_score"`
+	NormalizedGrowthScore float64 `json:"normalized_growth_score"`
+
+	// Conditional request cache
+	ETag         string `json:"etag"`
+	LastModified string `json:"last_modified"`
 }
 
 // DiscoveryState contains persisted state for topic discovery.
