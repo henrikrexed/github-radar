@@ -89,10 +89,10 @@ func TestCalculateStarVelocity(t *testing.T) {
 
 func TestCalculateStarAcceleration(t *testing.T) {
 	tests := []struct {
-		name         string
-		current      float64
-		previous     float64
-		wantAccel    float64
+		name      string
+		current   float64
+		previous  float64
+		wantAccel float64
 	}{
 		{
 			name:      "speeding up",

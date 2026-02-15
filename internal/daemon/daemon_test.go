@@ -33,12 +33,15 @@ func TestMatchesPattern(t *testing.T) {
 		{"foo/bar", "bar/*", false},
 		{"org/repo", "org/*", true},
 		{"other/repo", "org/*", false},
+		{"any/repo", "*/repo", true},
+		{"any/other", "*/repo", false},
+		{"any/thing", "*/*", true},
 	}
 
 	for _, tc := range tests {
-		got := matchesPattern(tc.name, tc.pattern)
+		got := MatchesPattern(tc.name, tc.pattern)
 		if got != tc.want {
-			t.Errorf("matchesPattern(%q, %q) = %v, want %v", tc.name, tc.pattern, got, tc.want)
+			t.Errorf("MatchesPattern(%q, %q) = %v, want %v", tc.name, tc.pattern, got, tc.want)
 		}
 	}
 }
@@ -66,6 +69,9 @@ func TestHealthEndpoint(t *testing.T) {
 		t.Fatalf("failed to create daemon: %v", err)
 	}
 
+	// Mark daemon as ready (normally done by Run())
+	d.setReady(true)
+
 	// Test health endpoint
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -83,6 +89,49 @@ func TestHealthEndpoint(t *testing.T) {
 
 	if !resp["healthy"] {
 		t.Error("expected healthy=true")
+	}
+}
+
+func TestHealthEndpoint_NotReady(t *testing.T) {
+	cfg := &config.Config{
+		GitHub: config.GithubConfig{
+			Token:     "test-token",
+			RateLimit: 4000,
+		},
+		Otel: config.OtelConfig{
+			Endpoint:    "http://localhost:4318",
+			ServiceName: "test",
+		},
+	}
+
+	daemonCfg := DaemonConfig{
+		Interval: time.Hour,
+		HTTPAddr: ":0",
+		DryRun:   true,
+	}
+
+	d, err := New(cfg, daemonCfg)
+	if err != nil {
+		t.Fatalf("failed to create daemon: %v", err)
+	}
+
+	// Daemon is not ready by default
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+
+	d.handleHealth(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status 503 when not ready, got %d", w.Code)
+	}
+
+	var resp map[string]bool
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if resp["healthy"] {
+		t.Error("expected healthy=false when not ready")
 	}
 }
 
@@ -178,31 +227,11 @@ func TestHealthEndpoint_Stopping(t *testing.T) {
 	}
 }
 
-func TestDaemon_IsExcluded(t *testing.T) {
-	cfg := &config.Config{
-		GitHub: config.GithubConfig{
-			Token:     "test-token",
-			RateLimit: 4000,
-		},
-		Otel: config.OtelConfig{
-			Endpoint:    "http://localhost:4318",
-			ServiceName: "test",
-		},
-		Exclusions: []string{
-			"excluded/repo",
-			"blocked-org/*",
-		},
-	}
-
-	daemonCfg := DaemonConfig{
-		Interval: time.Hour,
-		HTTPAddr: ":0",
-		DryRun:   true,
-	}
-
-	d, err := New(cfg, daemonCfg)
-	if err != nil {
-		t.Fatalf("failed to create daemon: %v", err)
+func TestIsExcluded(t *testing.T) {
+	exclusions := []string{
+		"excluded/repo",
+		"blocked-org/*",
+		"*/blocked-repo",
 	}
 
 	tests := []struct {
@@ -214,10 +243,12 @@ func TestDaemon_IsExcluded(t *testing.T) {
 		{"blocked-org/other", true},
 		{"allowed/repo", false},
 		{"other/repo", false},
+		{"any/blocked-repo", true},
+		{"owner/blocked-repo", true},
 	}
 
 	for _, tc := range tests {
-		got := d.isExcluded(tc.repo)
+		got := isExcluded(tc.repo, exclusions)
 		if got != tc.excluded {
 			t.Errorf("isExcluded(%q) = %v, want %v", tc.repo, got, tc.excluded)
 		}

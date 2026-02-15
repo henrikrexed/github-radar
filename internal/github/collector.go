@@ -37,17 +37,17 @@ type ErrorHandler func(owner, name string, err error)
 
 // Collector handles collecting data for multiple repositories.
 type Collector struct {
-	client       *Client
-	onError      ErrorHandler
-	collectPRs   bool
+	client          *Client
+	onError         ErrorHandler
+	collectPRs      bool
 	collectActivity bool
 }
 
 // NewCollector creates a new repository data collector.
 func NewCollector(client *Client) *Collector {
 	return &Collector{
-		client:         client,
-		collectPRs:     true,
+		client:          client,
+		collectPRs:      true,
 		collectActivity: true,
 	}
 }

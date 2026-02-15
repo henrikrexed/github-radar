@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -105,10 +106,15 @@ func (d *DiscoverCmd) Run(args []string) int {
 
 	// Load tracked repos from config into state (for AlreadyTracked detection)
 	for _, tracked := range cfg.Repositories {
+		parts := strings.SplitN(tracked.Repo, "/", 2)
+		if len(parts) != 2 {
+			logging.Warn("invalid repo format, skipping", "repo", tracked.Repo)
+			continue
+		}
 		if store.GetRepoState(tracked.Repo) == nil {
 			store.SetRepoState(tracked.Repo, state.RepoState{
-				Owner: strings.Split(tracked.Repo, "/")[0],
-				Name:  strings.Split(tracked.Repo, "/")[1],
+				Owner: parts[0],
+				Name:  parts[1],
 			})
 		}
 	}
@@ -230,19 +236,48 @@ func (d *DiscoverCmd) printTable(result *discovery.Result) {
 	}
 }
 
+// jsonResultOutput represents the JSON output structure for discovery results.
+type jsonResultOutput struct {
+	Topic        string           `json:"topic"`
+	TotalFound   int              `json:"total_found"`
+	AfterFilters int              `json:"after_filters"`
+	New          int              `json:"new"`
+	AutoTrack    int              `json:"auto_track"`
+	Repos        []jsonRepoOutput `json:"repos"`
+}
+
+// jsonRepoOutput represents a single repo in JSON output.
+type jsonRepoOutput struct {
+	Name      string  `json:"name"`
+	Stars     int     `json:"stars"`
+	Score     float64 `json:"score"`
+	AutoTrack bool    `json:"auto_track"`
+	Tracked   bool    `json:"tracked"`
+}
+
 // printJSON prints results in JSON format.
 func (d *DiscoverCmd) printJSON(result *discovery.Result) {
-	fmt.Printf(`{"topic":"%s","total_found":%d,"after_filters":%d,"new":%d,"auto_track":%d,"repos":[`,
-		result.Topic, result.TotalFound, result.AfterFilters, result.NewRepos, result.AutoTracked)
+	output := jsonResultOutput{
+		Topic:        result.Topic,
+		TotalFound:   result.TotalFound,
+		AfterFilters: result.AfterFilters,
+		New:          result.NewRepos,
+		AutoTrack:    result.AutoTracked,
+		Repos:        make([]jsonRepoOutput, len(result.Repos)),
+	}
 
 	for i, repo := range result.Repos {
-		if i > 0 {
-			fmt.Print(",")
+		output.Repos[i] = jsonRepoOutput{
+			Name:      repo.FullName,
+			Stars:     repo.Stars,
+			Score:     repo.NormalizedScore,
+			AutoTrack: repo.ShouldAutoTrack,
+			Tracked:   repo.AlreadyTracked,
 		}
-		fmt.Printf(`{"name":"%s","stars":%d,"score":%.1f,"auto_track":%t,"tracked":%t}`,
-			repo.FullName, repo.Stars, repo.NormalizedScore, repo.ShouldAutoTrack, repo.AlreadyTracked)
 	}
-	fmt.Println("]}")
+
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.Encode(output)
 }
 
 // printCSV prints results in CSV format.

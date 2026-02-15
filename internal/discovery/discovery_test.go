@@ -415,9 +415,24 @@ func TestMatchesPattern(t *testing.T) {
 		pattern string
 		match   bool
 	}{
+		// Exact matches
 		{"foo/bar", "foo/bar", true},
 		{"foo/bar", "foo/baz", false},
 		{"foo/bar", "bar/bar", false},
+		// Wildcard suffix (owner/*)
+		{"foo/bar", "foo/*", true},
+		{"foo/other", "foo/*", true},
+		{"bar/baz", "foo/*", false},
+		// Wildcard prefix (*/repo)
+		{"foo/bar", "*/bar", true},
+		{"other/bar", "*/bar", true},
+		{"foo/baz", "*/bar", false},
+		// Full wildcard
+		{"any/thing", "*/*", true},
+		{"foo/bar", "*/*", true},
+		// Invalid patterns
+		{"foo", "foo/*", false},
+		{"foo/bar/baz", "foo/*", false},
 	}
 
 	for _, tc := range tests {

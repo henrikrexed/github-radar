@@ -60,10 +60,10 @@ type VelocityMetrics struct {
 
 // ScoredRepo contains a repository with its calculated scores.
 type ScoredRepo struct {
-	FullName         string
-	Velocities       VelocityMetrics
-	RawScore         float64 // Weighted composite score
-	NormalizedScore  float64 // 0-100 normalized score
+	FullName        string
+	Velocities      VelocityMetrics
+	RawScore        float64 // Weighted composite score
+	NormalizedScore float64 // 0-100 normalized score
 }
 
 // Calculator calculates growth scores for repositories.

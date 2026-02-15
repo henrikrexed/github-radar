@@ -4,6 +4,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hrexed/github-radar/internal/github"
@@ -52,25 +53,25 @@ type DiscoveredRepo struct {
 	UpdatedAt   time.Time
 
 	// Calculated scores
-	GrowthScore       float64
-	NormalizedScore   float64
-	ShouldAutoTrack   bool
-	AlreadyTracked    bool
-	Excluded          bool
+	GrowthScore     float64
+	NormalizedScore float64
+	ShouldAutoTrack bool
+	AlreadyTracked  bool
+	Excluded        bool
 }
 
 // Result contains the results of a discovery run.
 type Result struct {
-	Topic           string
-	StartTime       time.Time
-	EndTime         time.Time
-	TotalFound      int
-	AfterFilters    int
-	NewRepos        int
-	AutoTracked     int
-	AlreadyTracked  int
-	Excluded        int
-	Repos           []DiscoveredRepo
+	Topic          string
+	StartTime      time.Time
+	EndTime        time.Time
+	TotalFound     int
+	AfterFilters   int
+	NewRepos       int
+	AutoTracked    int
+	AlreadyTracked int
+	Excluded       int
+	Repos          []DiscoveredRepo
 }
 
 // Discoverer handles repository discovery.
@@ -332,8 +333,8 @@ func (d *Discoverer) passesFilters(repo DiscoveredRepo) bool {
 		return false
 	}
 
-	// Max age filter
-	if d.config.MaxAgeDays > 0 {
+	// Max age filter (skip if CreatedAt is zero/unknown)
+	if d.config.MaxAgeDays > 0 && !repo.CreatedAt.IsZero() {
 		maxAge := time.Duration(d.config.MaxAgeDays) * 24 * time.Hour
 		if time.Since(repo.CreatedAt) > maxAge {
 			return false
@@ -354,9 +355,37 @@ func (d *Discoverer) isExcluded(fullName string) bool {
 }
 
 // matchesPattern checks if a repo name matches a glob-like pattern.
-// Supports * as wildcard.
+// Supports:
+//   - Exact match: "owner/repo"
+//   - Wildcard suffix: "owner/*" matches all repos from owner
+//   - Wildcard prefix: "*/repo" matches repo from any owner
+//   - Full wildcard: "*/*" matches everything
+//
+// Names must be valid "owner/repo" format (exactly one slash).
 func matchesPattern(name, pattern string) bool {
-	// Simple exact match for now
-	// TODO: Implement glob matching
-	return name == pattern
+	// Validate name format - must have exactly one slash
+	nameParts := strings.Split(name, "/")
+	if len(nameParts) != 2 {
+		return false
+	}
+
+	// Handle exact match
+	if name == pattern {
+		return true
+	}
+
+	// Handle wildcard patterns
+	if strings.Contains(pattern, "*") {
+		patternParts := strings.Split(pattern, "/")
+		if len(patternParts) != 2 {
+			return false
+		}
+
+		ownerMatch := patternParts[0] == "*" || patternParts[0] == nameParts[0]
+		repoMatch := patternParts[1] == "*" || patternParts[1] == nameParts[1]
+
+		return ownerMatch && repoMatch
+	}
+
+	return false
 }

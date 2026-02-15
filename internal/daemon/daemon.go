@@ -76,6 +76,8 @@ type Daemon struct {
 	nextScan        time.Time
 	reposTracked    int
 	rateLimitRemain int
+	startTime       time.Time // instance start time for uptime tracking
+	ready           bool      // true when daemon is fully initialized
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -162,6 +164,8 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		exporter:   exp,
 		store:      store,
 		status:     StatusIdle,
+		startTime:  time.Now(),
+		ready:      false,
 		ctx:        ctx,
 		cancel:     cancel,
 		reloadChan: make(chan os.Signal, 1),
@@ -206,11 +210,17 @@ func (d *Daemon) Run() error {
 	d.scheduleNextScan()
 
 	d.setStatus(StatusIdle)
+	d.setReady(true)
 	logging.Info("daemon ready", "next_scan", d.nextScan.Format(time.RFC3339))
 
-	// Main loop
+	// Main loop with immediate first scan check
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
+
+	// Check immediately if first scan should run (don't wait for ticker)
+	if time.Now().After(d.nextScan) {
+		d.runScan()
+	}
 
 	for {
 		select {
@@ -283,14 +293,21 @@ func (d *Daemon) runScan() {
 	d.setStatus(StatusScanning)
 	defer d.setStatus(StatusIdle)
 
-	startTime := time.Now()
+	scanStartTime := time.Now()
 	logging.Info("starting scheduled scan")
 
-	// Build repo list from config
-	repos := make([]github.Repo, 0, len(d.cfg.Repositories))
-	for _, tracked := range d.cfg.Repositories {
+	// Build repo list from config (hold lock while reading config)
+	d.mu.RLock()
+	repositories := make([]config.TrackedRepo, len(d.cfg.Repositories))
+	copy(repositories, d.cfg.Repositories)
+	exclusions := make([]string, len(d.cfg.Exclusions))
+	copy(exclusions, d.cfg.Exclusions)
+	d.mu.RUnlock()
+
+	repos := make([]github.Repo, 0, len(repositories))
+	for _, tracked := range repositories {
 		// Skip excluded repos
-		if d.isExcluded(tracked.Repo) {
+		if isExcluded(tracked.Repo, exclusions) {
 			continue
 		}
 		parts := strings.SplitN(tracked.Repo, "/", 2)
@@ -329,7 +346,7 @@ func (d *Daemon) runScan() {
 
 	// Update status info
 	d.mu.Lock()
-	d.lastScan = startTime
+	d.lastScan = scanStartTime
 	d.reposTracked = len(repos)
 	d.rateLimitRemain = d.client.RateLimitInfo().Remaining
 	d.mu.Unlock()
@@ -462,22 +479,49 @@ func (d *Daemon) reloadConfig() {
 }
 
 // isExcluded checks if a repo matches any exclusion pattern.
-func (d *Daemon) isExcluded(fullName string) bool {
-	for _, pattern := range d.cfg.Exclusions {
-		if matchesPattern(fullName, pattern) {
+func isExcluded(fullName string, exclusions []string) bool {
+	for _, pattern := range exclusions {
+		if MatchesPattern(fullName, pattern) {
 			return true
 		}
 	}
 	return false
 }
 
-// matchesPattern checks if a name matches a pattern (supports * wildcard).
-func matchesPattern(name, pattern string) bool {
-	if strings.HasSuffix(pattern, "/*") {
-		prefix := strings.TrimSuffix(pattern, "/*")
-		return strings.HasPrefix(name, prefix+"/")
+// MatchesPattern checks if a name matches a glob-like pattern.
+// Supports:
+//   - Exact match: "owner/repo"
+//   - Wildcard suffix: "owner/*" matches all repos from owner
+//   - Wildcard prefix: "*/repo" matches repo from any owner
+//   - Full wildcard: "*/*" matches everything
+//
+// Names must be valid "owner/repo" format (exactly one slash).
+func MatchesPattern(name, pattern string) bool {
+	// Validate name format - must have exactly one slash
+	nameParts := strings.Split(name, "/")
+	if len(nameParts) != 2 {
+		return false
 	}
-	return name == pattern
+
+	// Handle exact match
+	if name == pattern {
+		return true
+	}
+
+	// Handle wildcard patterns
+	if strings.Contains(pattern, "*") {
+		patternParts := strings.Split(pattern, "/")
+		if len(patternParts) != 2 {
+			return false
+		}
+
+		ownerMatch := patternParts[0] == "*" || patternParts[0] == nameParts[0]
+		repoMatch := patternParts[1] == "*" || patternParts[1] == nameParts[1]
+
+		return ownerMatch && repoMatch
+	}
+
+	return false
 }
 
 // setStatus updates the daemon status.
@@ -487,15 +531,24 @@ func (d *Daemon) setStatus(s Status) {
 	d.status = s
 }
 
+// setReady updates the daemon ready state.
+func (d *Daemon) setReady(ready bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ready = ready
+}
+
 // handleHealth handles the /health endpoint.
 func (d *Daemon) handleHealth(w http.ResponseWriter, r *http.Request) {
 	d.mu.RLock()
 	status := d.status
+	ready := d.ready
 	d.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if status == StatusStopping {
+	// Not healthy if stopping or not yet ready
+	if status == StatusStopping || !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]bool{"healthy": false})
 		return
@@ -514,8 +567,6 @@ type StatusResponse struct {
 	Uptime             string `json:"uptime"`
 }
 
-var startTime = time.Now()
-
 // handleStatus handles the /status endpoint.
 func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	d.mu.RLock()
@@ -523,7 +574,7 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Status:             string(d.status),
 		ReposTracked:       d.reposTracked,
 		RateLimitRemaining: d.rateLimitRemain,
-		Uptime:             time.Since(startTime).Round(time.Second).String(),
+		Uptime:             time.Since(d.startTime).Round(time.Second).String(),
 	}
 	if !d.lastScan.IsZero() {
 		resp.LastScan = d.lastScan.Format(time.RFC3339)

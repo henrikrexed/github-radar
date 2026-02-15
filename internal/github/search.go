@@ -77,8 +77,16 @@ func (c *Client) SearchRepositories(ctx context.Context, query, sort, order stri
 
 	results := make([]SearchResult, 0, len(resp.Items))
 	for _, item := range resp.Items {
-		createdAt, _ := time.Parse(time.RFC3339, item.CreatedAt)
-		updatedAt, _ := time.Parse(time.RFC3339, item.UpdatedAt)
+		createdAt, err := time.Parse(time.RFC3339, item.CreatedAt)
+		if err != nil {
+			// Log warning but continue - use zero time rather than failing
+			// This allows filtering logic to handle missing dates appropriately
+			createdAt = time.Time{}
+		}
+		updatedAt, err := time.Parse(time.RFC3339, item.UpdatedAt)
+		if err != nil {
+			updatedAt = time.Time{}
+		}
 
 		results = append(results, SearchResult{
 			Owner:       item.Owner.Login,

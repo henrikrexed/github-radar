@@ -11,8 +11,8 @@ import (
 
 func TestClient_GetMergedPRsCount(t *testing.T) {
 	// Create timestamps
-	recent := time.Now().Add(-3 * 24 * time.Hour)  // 3 days ago
-	old := time.Now().Add(-14 * 24 * time.Hour)    // 14 days ago
+	recent := time.Now().Add(-3 * 24 * time.Hour) // 3 days ago
+	old := time.Now().Add(-14 * 24 * time.Hour)   // 14 days ago
 
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -57,8 +57,8 @@ type RepoState struct {
 
 // DiscoveryState contains persisted state for topic discovery.
 type DiscoveryState struct {
-	LastScan   time.Time         `json:"last_scan"`
-	KnownRepos map[string]bool   `json:"known_repos"`
+	LastScan   time.Time            `json:"last_scan"`
+	KnownRepos map[string]bool      `json:"known_repos"`
 	TopicScans map[string]time.Time `json:"topic_scans"`
 }
 
@@ -78,8 +78,8 @@ func NewStore(path string) *Store {
 	return &Store{
 		path: path,
 		state: &State{
-			Version:   CurrentVersion,
-			Repos:     make(map[string]RepoState),
+			Version: CurrentVersion,
+			Repos:   make(map[string]RepoState),
 			Discovery: DiscoveryState{
 				KnownRepos: make(map[string]bool),
 				TopicScans: make(map[string]time.Time),
@@ -98,8 +98,8 @@ func (s *Store) Load() error {
 		if os.IsNotExist(err) {
 			// Initialize empty state
 			s.state = &State{
-				Version:   CurrentVersion,
-				Repos:     make(map[string]RepoState),
+				Version: CurrentVersion,
+				Repos:   make(map[string]RepoState),
 				Discovery: DiscoveryState{
 					KnownRepos: make(map[string]bool),
 					TopicScans: make(map[string]time.Time),

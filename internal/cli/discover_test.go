@@ -69,12 +69,12 @@ func TestTruncate(t *testing.T) {
 		max      int
 		expected string
 	}{
-		{"short", 10, "short"},          // shorter than max, no truncation
+		{"short", 10, "short"},           // shorter than max, no truncation
 		{"exactly10c", 10, "exactly10c"}, // exactly max, no truncation
 		{"this is a longer string", 10, "this is..."},
-		{"abc", 3, "abc"},               // exactly max, no truncation
-		{"abcd", 3, "..."},              // longer than max, truncated
-		{"abcdef", 5, "ab..."},          // longer than max, truncated
+		{"abc", 3, "abc"},      // exactly max, no truncation
+		{"abcd", 3, "..."},     // longer than max, truncated
+		{"abcdef", 5, "ab..."}, // longer than max, truncated
 	}
 
 	for _, tc := range tests {

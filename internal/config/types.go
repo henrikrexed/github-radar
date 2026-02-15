@@ -38,9 +38,9 @@ type OtelConfig struct {
 // DiscoveryConfig contains trend discovery settings.
 type DiscoveryConfig struct {
 	Enabled            bool     `yaml:"enabled"`
-	Topics             []string `yaml:"topics"`              // Topics to search for (e.g., kubernetes, ebpf)
-	MinStars           int      `yaml:"min_stars"`           // Minimum stars filter (default: 100)
-	MaxAgeDays         int      `yaml:"max_age_days"`        // Maximum repo age in days (0 = no limit)
+	Topics             []string `yaml:"topics"`               // Topics to search for (e.g., kubernetes, ebpf)
+	MinStars           int      `yaml:"min_stars"`            // Minimum stars filter (default: 100)
+	MaxAgeDays         int      `yaml:"max_age_days"`         // Maximum repo age in days (0 = no limit)
 	AutoTrackThreshold float64  `yaml:"auto_track_threshold"` // Growth score threshold for auto-tracking
 }
 

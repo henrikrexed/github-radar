@@ -54,23 +54,23 @@ func DefaultExporterConfig() ExporterConfig {
 
 // Exporter manages OpenTelemetry metrics export.
 type Exporter struct {
-	config         ExporterConfig
-	meterProvider  *sdkmetric.MeterProvider
-	meter          metric.Meter
-	shutdownFuncs  []func(context.Context) error
+	config        ExporterConfig
+	meterProvider *sdkmetric.MeterProvider
+	meter         metric.Meter
+	shutdownFuncs []func(context.Context) error
 
 	// Instruments
-	starsGauge            metric.Int64Gauge
-	forksGauge            metric.Int64Gauge
-	openIssuesGauge       metric.Int64Gauge
-	openPRsGauge          metric.Int64Gauge
-	contributorsGauge     metric.Int64Gauge
-	growthScoreGauge      metric.Float64Gauge
-	normalizedScoreGauge  metric.Float64Gauge
-	starVelocityGauge     metric.Float64Gauge
-	starAccelerationGauge metric.Float64Gauge
-	prVelocityGauge       metric.Float64Gauge
-	issueVelocityGauge    metric.Float64Gauge
+	starsGauge             metric.Int64Gauge
+	forksGauge             metric.Int64Gauge
+	openIssuesGauge        metric.Int64Gauge
+	openPRsGauge           metric.Int64Gauge
+	contributorsGauge      metric.Int64Gauge
+	growthScoreGauge       metric.Float64Gauge
+	normalizedScoreGauge   metric.Float64Gauge
+	starVelocityGauge      metric.Float64Gauge
+	starAccelerationGauge  metric.Float64Gauge
+	prVelocityGauge        metric.Float64Gauge
+	issueVelocityGauge     metric.Float64Gauge
 	contributorGrowthGauge metric.Float64Gauge
 }
 
@@ -266,10 +266,10 @@ func (e *Exporter) createInstruments() error {
 
 // RepoMetrics contains metrics to record for a repository.
 type RepoMetrics struct {
-	Owner       string
-	Name        string
-	Language    string
-	Categories  []string
+	Owner      string
+	Name       string
+	Language   string
+	Categories []string
 
 	Stars        int
 	Forks        int

@@ -12,10 +12,10 @@ import (
 
 func TestClient_ShouldBackoff(t *testing.T) {
 	tests := []struct {
-		name       string
-		limit      int
-		remaining  int
-		threshold  int
+		name        string
+		limit       int
+		remaining   int
+		threshold   int
 		wantBackoff bool
 	}{
 		{"above threshold", 5000, 200, 100, false},

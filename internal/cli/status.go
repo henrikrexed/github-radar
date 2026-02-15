@@ -56,7 +56,9 @@ func (s *StatusCmd) Run(args []string) int {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Limit response body to 1MB to prevent memory exhaustion
+	const maxResponseSize = 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading response: %v\n", err)
 		return 1
