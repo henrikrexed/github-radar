@@ -97,6 +97,9 @@ func (c *CLI) runCommand(cmd string, args []string) int {
 	case "exclude":
 		excludeCmd := NewExcludeCmd(c)
 		return excludeCmd.Run(args)
+	case "discover":
+		discoverCmd := NewDiscoverCmd(c)
+		return discoverCmd.Run(args)
 	case "help":
 		c.printHelp()
 		return 0
@@ -141,6 +144,9 @@ Commands:
                      Options: --category <name>, --format <table|json|csv>
   exclude <action>   Manage exclusion list
                      Actions: add <pattern>, remove <pattern>, list
+  discover           Discover trending repositories by topic
+                     Options: --topics, --min-stars, --max-age, --threshold,
+                              --auto-track, --format <table|json|csv>
   config validate    Validate configuration file
   config show        Display current configuration
   help               Show this help message

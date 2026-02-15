@@ -77,7 +77,7 @@ func (c *ConfigCmd) Show() int {
 	fmt.Printf("  Enabled: %v\n", cfg.Discovery.Enabled)
 	fmt.Printf("  Min Stars: %d\n", cfg.Discovery.MinStars)
 	fmt.Printf("  Max Age Days: %d\n", cfg.Discovery.MaxAgeDays)
-	fmt.Printf("  Auto Track Threshold: %d\n", cfg.Discovery.AutoTrackThreshold)
+	fmt.Printf("  Auto Track Threshold: %.1f\n", cfg.Discovery.AutoTrackThreshold)
 	fmt.Printf("\nScoring Weights:\n")
 	fmt.Printf("  Star Velocity: %.2f\n", cfg.Scoring.Weights.StarVelocity)
 	fmt.Printf("  Star Acceleration: %.2f\n", cfg.Scoring.Weights.StarAcceleration)

@@ -64,7 +64,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Discovery.AutoTrackThreshold < 0 {
-		issues = append(issues, fmt.Sprintf("discovery.auto_track_threshold: must be >= 0, got %d", c.Discovery.AutoTrackThreshold))
+		issues = append(issues, fmt.Sprintf("discovery.auto_track_threshold: must be >= 0, got %.1f", c.Discovery.AutoTrackThreshold))
 	}
 
 	// Scoring weights must be non-negative

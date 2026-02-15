@@ -79,7 +79,7 @@ exclusions:
 		t.Errorf("Discovery.MaxAgeDays = %d, want %d", cfg.Discovery.MaxAgeDays, 30)
 	}
 	if cfg.Discovery.AutoTrackThreshold != 75 {
-		t.Errorf("Discovery.AutoTrackThreshold = %d, want %d", cfg.Discovery.AutoTrackThreshold, 75)
+		t.Errorf("Discovery.AutoTrackThreshold = %.1f, want %.1f", cfg.Discovery.AutoTrackThreshold, 75.0)
 	}
 
 	// Verify Scoring config
