@@ -1,0 +1,47 @@
+# GitHub Radar Configuration
+# Copy to config.yaml and fill in values
+
+github:
+  token: ${GITHUB_TOKEN}
+  rate_limit: 4000
+
+otel:
+  endpoint: http://localhost:4318
+  headers:
+    Authorization: "Api-Token ${DT_API_TOKEN}"
+  service_name: github-radar
+
+discovery:
+  enabled: true
+  min_stars: 100
+  max_age_days: 90
+  auto_track_threshold: 50
+
+scoring:
+  weights:
+    star_velocity: 2.0
+    star_acceleration: 3.0
+    contributor_growth: 1.5
+    pr_velocity: 1.0
+    issue_velocity: 0.5
+
+exclusions:
+  - example-org/example-repo
+
+# Repositories to track with their categories
+# If no categories specified, "default" is used
+repositories:
+  - repo: kubernetes/kubernetes
+    categories:
+      - cncf
+      - container-orchestration
+  - repo: prometheus/prometheus
+    categories:
+      - cncf
+      - monitoring
+  - repo: grafana/grafana
+    categories:
+      - monitoring
+      - visualization
+  # Repo without categories uses "default"
+  - repo: opentelemetry/opentelemetry-go
