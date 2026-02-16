@@ -1,7 +1,11 @@
 ---
 stepsCompleted: ['step-01-validate-prerequisites', 'step-02-design-epics', 'step-03-create-stories', 'step-04-final-validation']
 workflowStatus: complete
-completedAt: '2026-02-15'
+completedAt: '2026-02-16'
+lastEdited: '2026-02-16'
+editHistory:
+  - date: '2026-02-16'
+    changes: "Added Epic 8 (Documentation & User Guide, 6 stories) and Epic 9 (CI/CD Pipeline, 7 stories) as MVP epics. Renumbered post-MVP epics from 8-12 to 10-14. Added FR56-FR67 to requirements inventory and FR coverage map."
 inputDocuments:
   - type: prd
     path: prd.md
@@ -98,6 +102,22 @@ This document provides the complete epic and story breakdown for GitHub Trend Sc
 - FR53: System logs warnings for repositories that return 404 (deleted/renamed)
 - FR54: System exits with code 0 on success, code 1 on fatal errors
 - FR55: System can run in dry-run mode (collect but don't export)
+
+**Documentation (FR56-FR61)**
+- FR56: Project includes comprehensive README with getting started guide
+- FR57: README documents GitHub token generation process
+- FR58: README includes CLI command examples for all commands
+- FR59: README documents daemon setup and configuration
+- FR60: Project provides MkDocs documentation site
+- FR61: MkDocs site is deployable to GitHub Pages
+
+**CI/CD Pipeline (FR62-FR67)**
+- FR62: GitHub Actions workflow builds on every push/PR
+- FR63: GitHub Actions workflow runs full test suite
+- FR64: GitHub Actions workflow runs quality checks (go vet, staticcheck, gofmt)
+- FR65: GitHub Actions workflow runs security scans (govulncheck)
+- FR66: GitHub Actions workflow creates cross-platform release binaries on tag
+- FR67: GitHub Actions workflow publishes release artifacts as GitHub Release assets
 
 ### NonFunctional Requirements
 
@@ -209,6 +229,18 @@ This document provides the complete epic and story breakdown for GitHub Trend Sc
 | FR53 | Epic 5 | Warn on 404 repos |
 | FR54 | Epic 5 | Exit codes 0/1 |
 | FR55 | Epic 5 | Dry-run mode |
+| FR56 | Epic 8 | Comprehensive README |
+| FR57 | Epic 8 | Token generation guide |
+| FR58 | Epic 8 | CLI command examples |
+| FR59 | Epic 8 | Daemon setup documentation |
+| FR60 | Epic 8 | MkDocs documentation site |
+| FR61 | Epic 8 | GitHub Pages deployment |
+| FR62 | Epic 9 | Build on push/PR |
+| FR63 | Epic 9 | Test on push/PR |
+| FR64 | Epic 9 | Quality checks |
+| FR65 | Epic 9 | Security scans |
+| FR66 | Epic 9 | Cross-platform release binaries |
+| FR67 | Epic 9 | Publish release assets |
 
 ## Epic List
 
@@ -261,6 +293,22 @@ System automatically discovers new trending repositories matching configured top
 Operator can run continuous scheduled monitoring via background daemon. Includes Docker packaging for easy deployment.
 
 **Architecture Requirements:** serve command, HTTP status endpoint, Docker image, native binaries
+
+---
+
+### Epic 8: Documentation & User Guide
+Project provides comprehensive documentation for new users, including README with getting started guide, GitHub token setup, CLI examples, daemon configuration, and a MkDocs documentation site deployable to GitHub Pages.
+
+**FRs Covered:** FR56, FR57, FR58, FR59, FR60, FR61
+**NFRs Addressed:** NFR21
+
+---
+
+### Epic 9: CI/CD Pipeline
+GitHub Actions workflows automate build, test, quality checks, security scans, and cross-platform release artifact creation. Ensures every PR is validated and releases are published automatically.
+
+**FRs Covered:** FR62, FR63, FR64, FR65, FR66, FR67
+**NFRs Addressed:** NFR19, NFR22
 
 ---
 
@@ -1317,13 +1365,280 @@ So that build commands are standardized.
 
 ---
 
+## Epic 8: Documentation & User Guide
+
+Project provides comprehensive documentation for new users, including README with getting started guide, GitHub token setup, CLI command examples, daemon configuration, and a MkDocs documentation site.
+
+### Story 8.1: Create Comprehensive README
+
+As an **operator**,
+I want a clear and complete README in the project root,
+So that I can quickly understand what GitHub Radar does and how to get started.
+
+**Acceptance Criteria:**
+
+**Given** the project repository
+**When** a new user visits the GitHub page
+**Then** README includes: project description, key features, prerequisites (Go 1.22+, GitHub token)
+**And** README includes badges for build status, Go version, and license
+**And** README includes a quick-start section with install + first scan in under 5 commands
+**And** README includes links to full MkDocs documentation
+
+*(Addresses: FR56)*
+
+---
+
+### Story 8.2: Document GitHub Token Generation
+
+As an **operator**,
+I want step-by-step instructions for creating a GitHub token,
+So that I can authenticate without guessing the required scopes.
+
+**Acceptance Criteria:**
+
+**Given** a new user needs a GitHub token
+**When** they follow the documentation
+**Then** instructions cover: navigating to GitHub Settings → Developer Settings → Personal Access Tokens
+**And** required scopes are listed: `public_repo` (minimum), `read:org` (optional for org repos)
+**And** instructions explain how to set the token as `GITHUB_TOKEN` environment variable
+**And** instructions cover both classic tokens and fine-grained tokens
+**And** security best practices are noted (never commit tokens, use env vars)
+
+*(Addresses: FR57)*
+
+---
+
+### Story 8.3: Document CLI Command Examples
+
+As an **operator**,
+I want examples for every CLI command,
+So that I can learn by example without reading full documentation.
+
+**Acceptance Criteria:**
+
+**Given** each CLI command (collect, discover, add, remove, list, serve, config)
+**When** the README documents it
+**Then** each command has: description, syntax, common flags, and 2-3 practical examples
+**And** examples show real-world usage (e.g., discovering Kubernetes projects, adding a specific repo)
+**And** output samples are included so users know what to expect
+**And** global flags (--config, --state, --dry-run, --verbose) are documented
+
+*(Addresses: FR58)*
+
+---
+
+### Story 8.4: Document Daemon Setup and Configuration
+
+As an **operator**,
+I want documentation on running GitHub Radar as a background daemon,
+So that I can set up continuous automated scanning.
+
+**Acceptance Criteria:**
+
+**Given** the `serve` command
+**When** documentation covers daemon usage
+**Then** daemon start/stop commands are documented
+**And** configuration options (interval, HTTP address, dry-run) are explained
+**And** systemd service file example is provided
+**And** Docker Compose deployment is documented
+**And** health and status endpoint usage is explained
+**And** SIGHUP config reload is documented
+
+*(Addresses: FR59)*
+
+---
+
+### Story 8.5: Create MkDocs Documentation Site
+
+As an **operator**,
+I want a structured documentation website,
+So that I can find detailed reference material beyond the README.
+
+**Acceptance Criteria:**
+
+**Given** the project documentation needs
+**When** MkDocs is configured
+**Then** `mkdocs.yml` is present in project root with Material theme
+**And** documentation structure includes:
+  - Home (overview + quick start)
+  - Installation (binary, Docker, from source)
+  - Configuration Reference (full YAML schema with descriptions)
+  - CLI Commands (detailed per-command reference)
+  - Architecture Overview (how the scanner works)
+  - Daemon Guide (scheduling, health checks, deployment)
+  - OpenTelemetry Integration (endpoints, Dynatrace setup, dashboards)
+  - Contributing Guide
+**And** `mkdocs serve` runs locally for preview
+**And** docs source lives in `docs/` directory
+
+*(Addresses: FR60)*
+
+---
+
+### Story 8.6: Configure MkDocs GitHub Pages Deployment
+
+As a **developer**,
+I want the MkDocs site to deploy to GitHub Pages,
+So that documentation is publicly accessible.
+
+**Acceptance Criteria:**
+
+**Given** MkDocs site is configured
+**When** deployment is triggered
+**Then** `mkdocs gh-deploy` builds and pushes to `gh-pages` branch
+**And** GitHub Actions workflow automates deployment on merge to main
+**And** documentation URL is linked in README and GitHub repo description
+
+*(Addresses: FR61)*
+
+---
+
+## Epic 9: CI/CD Pipeline
+
+GitHub Actions workflows automate build, test, quality checks, security scans, and cross-platform release artifact creation.
+
+### Story 9.1: Create CI Workflow for Build Validation
+
+As a **developer**,
+I want the project to build automatically on every push and PR,
+So that broken builds are caught before merge.
+
+**Acceptance Criteria:**
+
+**Given** a push or pull request to main/master
+**When** the CI workflow triggers
+**Then** Go project compiles successfully (`go build ./...`)
+**And** build runs on ubuntu-latest with Go 1.22+
+**And** build failures block PR merge
+**And** workflow file is `.github/workflows/ci.yml`
+
+*(Addresses: FR62)*
+
+---
+
+### Story 9.2: Add Test Execution to CI
+
+As a **developer**,
+I want all tests to run automatically in CI,
+So that regressions are caught before merge.
+
+**Acceptance Criteria:**
+
+**Given** CI workflow triggers
+**When** test step executes
+**Then** `go test ./...` runs with `-race` flag for race detection
+**And** test results are reported in PR checks
+**And** test failures block PR merge
+**And** test coverage report is generated and available as artifact
+
+*(Addresses: FR63, NFR19)*
+
+---
+
+### Story 9.3: Add Code Quality Checks to CI
+
+As a **developer**,
+I want automated quality checks on every PR,
+So that code style and correctness issues are caught early.
+
+**Acceptance Criteria:**
+
+**Given** CI workflow triggers
+**When** quality step executes
+**Then** `go vet ./...` runs and reports issues
+**And** `staticcheck ./...` runs for static analysis
+**And** `gofmt` validation checks formatting (diff against gofmt output)
+**And** any quality violation blocks PR merge
+**And** clear error messages indicate which check failed and how to fix
+
+*(Addresses: FR64)*
+
+---
+
+### Story 9.4: Add Security Scanning to CI
+
+As a **developer**,
+I want automated security vulnerability scanning,
+So that known vulnerabilities in dependencies are caught.
+
+**Acceptance Criteria:**
+
+**Given** CI workflow triggers
+**When** security step executes
+**Then** `govulncheck ./...` scans for known Go vulnerabilities
+**And** vulnerability findings are reported in PR checks
+**And** critical/high vulnerabilities block PR merge
+**And** `go mod verify` validates module checksums
+
+*(Addresses: FR65, NFR22)*
+
+---
+
+### Story 9.5: Create Release Workflow for Binary Artifacts
+
+As a **developer**,
+I want cross-platform binaries built automatically on tag push,
+So that releases are consistent and reproducible.
+
+**Acceptance Criteria:**
+
+**Given** a git tag matching `v*` is pushed (e.g., `v1.0.0`)
+**When** the release workflow triggers
+**Then** binaries are cross-compiled for: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64
+**And** binaries are named `github-radar-{os}-{arch}` (with `.exe` for windows)
+**And** `CGO_ENABLED=0` is used for static binaries
+**And** version is embedded via `-ldflags` from git tag
+**And** workflow file is `.github/workflows/release.yml`
+
+*(Addresses: FR66)*
+
+---
+
+### Story 9.6: Publish Release Artifacts to GitHub Releases
+
+As an **operator**,
+I want release binaries available as GitHub Release assets,
+So that I can download the correct binary for my platform.
+
+**Acceptance Criteria:**
+
+**Given** cross-platform binaries are built
+**When** release workflow completes
+**Then** a GitHub Release is created with the tag name
+**And** all platform binaries are attached as release assets
+**And** SHA256 checksums file is generated and attached
+**And** release notes are auto-generated from commits since last tag
+**And** release is marked as latest
+
+*(Addresses: FR67)*
+
+---
+
+### Story 9.7: Add MkDocs Deployment to CI
+
+As a **developer**,
+I want documentation automatically deployed on merge to main,
+So that docs stay in sync with the code.
+
+**Acceptance Criteria:**
+
+**Given** a merge to main branch
+**When** documentation has changed (docs/ or mkdocs.yml)
+**Then** MkDocs site is built and deployed to GitHub Pages
+**And** deployment only triggers when docs files change (path filter)
+**And** build failure does not block the main branch (docs deployment is non-blocking)
+
+*(Addresses: FR61, NFR21)*
+
+---
+
 # Post-MVP: Category Classification Feature
 
 The following epics implement the Category Classification feature as specified in feature-spec-category-classification.md.
 
 ---
 
-## Epic 8: SQLite Database Foundation
+## Epic 10: SQLite Database Foundation
 
 **User Outcome:** Operator has reliable, queryable storage that supports classification features while maintaining compatibility with existing CLI commands.
 
@@ -1331,7 +1646,7 @@ The following epics implement the Category Classification feature as specified i
 
 ---
 
-## Epic 9: LLM Category Classification
+## Epic 11: LLM Category Classification
 
 **User Outcome:** System automatically classifies repositories into CNCF/cloud-native categories using local LLM, enabling operators to filter and route alerts by domain.
 
@@ -1339,7 +1654,7 @@ The following epics implement the Category Classification feature as specified i
 
 ---
 
-## Epic 10: Classification Overrides & Taxonomy Management
+## Epic 12: Classification Overrides & Taxonomy Management
 
 **User Outcome:** Operator can exclude repos, force category overrides, and manage the category taxonomy via CLI, giving full control over classification behavior.
 
@@ -1347,7 +1662,7 @@ The following epics implement the Category Classification feature as specified i
 
 ---
 
-## Epic 11: Self-Monitoring & Telemetry
+## Epic 13: Self-Monitoring & Telemetry
 
 **User Outcome:** Operator can observe the scanner's health, LLM token usage, and resource consumption via their chosen observability backend.
 
@@ -1355,7 +1670,7 @@ The following epics implement the Category Classification feature as specified i
 
 ---
 
-## Epic 12: Model Management & Benchmarking
+## Epic 14: Model Management & Benchmarking
 
 **User Outcome:** Operator can switch between LLM models (accuracy vs speed tradeoff) and benchmark classification performance to make informed decisions.
 
@@ -1367,51 +1682,51 @@ The following epics implement the Category Classification feature as specified i
 
 | FR | Epic | Description |
 |----|------|-------------|
-| FR-C1 | Epic 9 | Classify repos into 18 categories + other |
-| FR-C2 | Epic 9 | Use Ollama with qwen3 models |
-| FR-C3 | Epic 9 | Store category, confidence, readme_hash |
-| FR-C4 | Epic 9 | Reclassify when README hash changes |
-| FR-C5 | Epic 9 | Reclassify all when model changes |
-| FR-C6 | Epic 9 | Customizable prompts via config |
-| FR-C7 | Epic 10 | Exclude repos from classification |
-| FR-C8 | Epic 10 | Force category override |
-| FR-C9 | Epic 10 | Manage category taxonomy via CLI |
-| FR-C10 | Epic 12 | Support model switching |
-| FR-C11 | Epic 12 | Benchmark classification across models |
-| FR-C12 | Epic 12 | Benchmark outputs performance metrics |
-| FR-C13 | Epic 11 | Export host metrics via OTel |
-| FR-C14 | Epic 11 | Export LLM telemetry via OpenLLMetry |
-| FR-C15 | Epic 11 | User-configurable collector exporters |
-| FR-C16 | Epic 8 | Use SQLite for repo state |
-| FR-C17 | Epic 8 | Schema with classification columns |
-| FR-C18 | Epic 8 | Excluded repos remain in DB |
-| CLI-C1 | Epic 10 | scanner exclude list |
-| CLI-C2 | Epic 10 | scanner exclude add |
-| CLI-C3 | Epic 10 | scanner exclude remove |
-| CLI-C4 | Epic 10 | scanner category list-overrides |
-| CLI-C5 | Epic 10 | scanner category set |
-| CLI-C6 | Epic 10 | scanner category unset |
-| CLI-C7 | Epic 10 | scanner category list |
-| CLI-C8 | Epic 10 | scanner category add |
-| CLI-C9 | Epic 10 | scanner category remove |
-| CLI-C10 | Epic 9 | scanner classify |
-| CLI-C11 | Epic 9 | scanner classify test |
-| CLI-C12 | Epic 12 | scanner classify model |
-| CLI-C13 | Epic 12 | scanner classify model <name> |
-| CLI-C14 | Epic 12 | scanner benchmark --sample |
-| CLI-C15 | Epic 12 | scanner benchmark --compare |
-| CLI-C16 | Epic 11 | scanner telemetry status |
-| CLI-C17 | Epic 11 | scanner telemetry enable/disable |
-| CLI-C18 | Epic 11 | scanner telemetry exporters |
-| CLI-C19 | Epic 11 | scanner telemetry test |
+| FR-C1 | Epic 11 | Classify repos into 18 categories + other |
+| FR-C2 | Epic 11 | Use Ollama with qwen3 models |
+| FR-C3 | Epic 11 | Store category, confidence, readme_hash |
+| FR-C4 | Epic 11 | Reclassify when README hash changes |
+| FR-C5 | Epic 11 | Reclassify all when model changes |
+| FR-C6 | Epic 11 | Customizable prompts via config |
+| FR-C7 | Epic 12 | Exclude repos from classification |
+| FR-C8 | Epic 12 | Force category override |
+| FR-C9 | Epic 12 | Manage category taxonomy via CLI |
+| FR-C10 | Epic 14 | Support model switching |
+| FR-C11 | Epic 14 | Benchmark classification across models |
+| FR-C12 | Epic 14 | Benchmark outputs performance metrics |
+| FR-C13 | Epic 13 | Export host metrics via OTel |
+| FR-C14 | Epic 13 | Export LLM telemetry via OpenLLMetry |
+| FR-C15 | Epic 13 | User-configurable collector exporters |
+| FR-C16 | Epic 10 | Use SQLite for repo state |
+| FR-C17 | Epic 10 | Schema with classification columns |
+| FR-C18 | Epic 10 | Excluded repos remain in DB |
+| CLI-C1 | Epic 12 | scanner exclude list |
+| CLI-C2 | Epic 12 | scanner exclude add |
+| CLI-C3 | Epic 12 | scanner exclude remove |
+| CLI-C4 | Epic 12 | scanner category list-overrides |
+| CLI-C5 | Epic 12 | scanner category set |
+| CLI-C6 | Epic 12 | scanner category unset |
+| CLI-C7 | Epic 12 | scanner category list |
+| CLI-C8 | Epic 12 | scanner category add |
+| CLI-C9 | Epic 12 | scanner category remove |
+| CLI-C10 | Epic 11 | scanner classify |
+| CLI-C11 | Epic 11 | scanner classify test |
+| CLI-C12 | Epic 14 | scanner classify model |
+| CLI-C13 | Epic 14 | scanner classify model <name> |
+| CLI-C14 | Epic 14 | scanner benchmark --sample |
+| CLI-C15 | Epic 14 | scanner benchmark --compare |
+| CLI-C16 | Epic 13 | scanner telemetry status |
+| CLI-C17 | Epic 13 | scanner telemetry enable/disable |
+| CLI-C18 | Epic 13 | scanner telemetry exporters |
+| CLI-C19 | Epic 13 | scanner telemetry test |
 
 ---
 
-## Epic 8: SQLite Database Foundation - Stories
+## Epic 10: SQLite Database Foundation - Stories
 
 Operator has reliable, queryable storage that supports classification features while maintaining compatibility with existing CLI commands.
 
-### Story 8.1: Initialize SQLite Database Schema
+### Story 10.1: Initialize SQLite Database Schema
 
 As an **operator**,
 I want the scanner to use SQLite for persistent storage,
@@ -1426,7 +1741,7 @@ So that I have reliable, queryable data without external database services.
 
 ---
 
-### Story 8.2: Add Classification Columns to Schema
+### Story 10.2: Add Classification Columns to Schema
 
 As the **system**,
 I want classification-related columns in the repos table,
@@ -1441,7 +1756,7 @@ So that category data can be stored alongside repo metrics.
 
 ---
 
-### Story 8.3: Migrate JSON State to SQLite
+### Story 10.3: Migrate JSON State to SQLite
 
 As an **operator**,
 I want existing JSON state data migrated to SQLite,
@@ -1457,7 +1772,7 @@ So that I don't lose historical data when upgrading.
 
 ---
 
-### Story 8.4: Handle Excluded Repos in Database
+### Story 10.4: Handle Excluded Repos in Database
 
 As the **system**,
 I want excluded repos to remain in database but be skipped,
@@ -1474,11 +1789,11 @@ So that I can track exclusion history and re-enable repos later.
 
 ---
 
-## Epic 9: LLM Category Classification - Stories
+## Epic 11: LLM Category Classification - Stories
 
 System automatically classifies repositories into CNCF/cloud-native categories using local LLM, enabling operators to filter and route alerts by domain.
 
-### Story 9.1: Load Classification Configuration
+### Story 11.1: Load Classification Configuration
 
 As an **operator**,
 I want to configure classification settings via YAML,
@@ -1496,7 +1811,7 @@ So that I can customize the LLM behavior without code changes.
 
 ---
 
-### Story 9.2: Connect to Ollama LLM Service
+### Story 11.2: Connect to Ollama LLM Service
 
 As the **system**,
 I want to communicate with Ollama for classification,
@@ -1513,7 +1828,7 @@ So that repos can be categorized using local LLM.
 
 ---
 
-### Story 9.3: Fetch and Hash README Content
+### Story 11.3: Fetch and Hash README Content
 
 As the **system**,
 I want to fetch README and compute hash,
@@ -1530,7 +1845,7 @@ So that I can detect changes and avoid redundant classifications.
 
 ---
 
-### Story 9.4: Classify Repository with LLM
+### Story 11.4: Classify Repository with LLM
 
 As the **system**,
 I want to send repo data to LLM for classification,
@@ -1548,7 +1863,7 @@ So that repos are assigned to appropriate categories.
 
 ---
 
-### Story 9.5: Store Classification Results
+### Story 11.5: Store Classification Results
 
 As the **system**,
 I want to persist classification in database,
@@ -1567,7 +1882,7 @@ So that category data is available for queries and export.
 
 ---
 
-### Story 9.6: Skip Classification When README Unchanged
+### Story 11.6: Skip Classification When README Unchanged
 
 As the **system**,
 I want to skip LLM calls when README hasn't changed,
@@ -1583,7 +1898,7 @@ So that I save resources and avoid redundant API calls.
 
 ---
 
-### Story 9.7: Trigger Reclassification on README Change
+### Story 11.7: Trigger Reclassification on README Change
 
 As the **system**,
 I want to reclassify when README changes,
@@ -1599,7 +1914,7 @@ So that category stays accurate as projects evolve.
 
 ---
 
-### Story 9.8: Implement Classify Command
+### Story 11.8: Implement Classify Command
 
 As an **operator**,
 I want to run classification via CLI,
@@ -1616,7 +1931,7 @@ So that I can trigger classification on demand.
 
 ---
 
-### Story 9.9: Implement Classify Test Command
+### Story 11.9: Implement Classify Test Command
 
 As an **operator**,
 I want to test classification on a single repo,
@@ -1633,11 +1948,11 @@ So that I can verify prompts and configuration work correctly.
 
 ---
 
-## Epic 10: Classification Overrides & Taxonomy Management - Stories
+## Epic 12: Classification Overrides & Taxonomy Management - Stories
 
 Operator can exclude repos, force category overrides, and manage the category taxonomy via CLI, giving full control over classification behavior.
 
-### Story 10.1: Implement Exclude List Command
+### Story 12.1: Implement Exclude List Command
 
 As an **operator**,
 I want to view all excluded repositories,
@@ -1654,7 +1969,7 @@ So that I can see what's being skipped.
 
 ---
 
-### Story 10.2: Implement Exclude Add Command
+### Story 12.2: Implement Exclude Add Command
 
 As an **operator**,
 I want to exclude a repository from tracking,
@@ -1671,7 +1986,7 @@ So that irrelevant repos don't appear in my data.
 
 ---
 
-### Story 10.3: Implement Exclude Remove Command
+### Story 12.3: Implement Exclude Remove Command
 
 As an **operator**,
 I want to remove a repository from exclusion list,
@@ -1688,7 +2003,7 @@ So that I can start tracking it again.
 
 ---
 
-### Story 10.4: Implement Category List-Overrides Command
+### Story 12.4: Implement Category List-Overrides Command
 
 As an **operator**,
 I want to view all manual category overrides,
@@ -1704,7 +2019,7 @@ So that I can see which repos have forced categories.
 
 ---
 
-### Story 10.5: Implement Category Set Command
+### Story 12.5: Implement Category Set Command
 
 As an **operator**,
 I want to force a category on a repository,
@@ -1722,7 +2037,7 @@ So that I can correct LLM mistakes or pre-classify repos.
 
 ---
 
-### Story 10.6: Implement Category Unset Command
+### Story 12.6: Implement Category Unset Command
 
 As an **operator**,
 I want to remove a forced category override,
@@ -1739,7 +2054,7 @@ So that the repo can be classified by LLM again.
 
 ---
 
-### Story 10.7: Implement Category List Command
+### Story 12.7: Implement Category List Command
 
 As an **operator**,
 I want to view the allowed category taxonomy,
@@ -1755,7 +2070,7 @@ So that I know what categories are available.
 
 ---
 
-### Story 10.8: Implement Category Add Command
+### Story 12.8: Implement Category Add Command
 
 As an **operator**,
 I want to add a new category to the taxonomy,
@@ -1773,7 +2088,7 @@ So that I can expand classification for new domains.
 
 ---
 
-### Story 10.9: Implement Category Remove Command
+### Story 12.9: Implement Category Remove Command
 
 As an **operator**,
 I want to remove a category from the taxonomy,
@@ -1791,11 +2106,11 @@ So that I can clean up unused categories.
 
 ---
 
-## Epic 11: Self-Monitoring & Telemetry - Stories
+## Epic 13: Self-Monitoring & Telemetry - Stories
 
 Operator can observe the scanner's health, LLM token usage, and resource consumption via their chosen observability backend.
 
-### Story 11.1: Configure Telemetry Settings
+### Story 13.1: Configure Telemetry Settings
 
 As an **operator**,
 I want to configure self-monitoring via YAML,
@@ -1812,7 +2127,7 @@ So that I can enable/disable telemetry and set my backend.
 
 ---
 
-### Story 11.2: Deploy OTel Collector Sidecar Config
+### Story 13.2: Deploy OTel Collector Sidecar Config
 
 As an **operator**,
 I want a pre-configured OTel Collector config,
@@ -1830,7 +2145,7 @@ So that I can collect scanner metrics without manual setup.
 
 ---
 
-### Story 11.3: Collect Host Metrics
+### Story 13.3: Collect Host Metrics
 
 As the **system**,
 I want to collect VM resource metrics,
@@ -1848,7 +2163,7 @@ So that operators can monitor scanner infrastructure health.
 
 ---
 
-### Story 11.4: Instrument LLM Calls with OpenLLMetry
+### Story 13.4: Instrument LLM Calls with OpenLLMetry
 
 As the **system**,
 I want to capture LLM telemetry,
@@ -1866,7 +2181,7 @@ So that operators can track classification performance and costs.
 
 ---
 
-### Story 11.5: Create LLM Request Spans
+### Story 13.5: Create LLM Request Spans
 
 As the **system**,
 I want distributed traces for classification,
@@ -1884,7 +2199,7 @@ So that operators can debug slow or failed classifications.
 
 ---
 
-### Story 11.6: Configure User Exporters
+### Story 13.6: Configure User Exporters
 
 As an **operator**,
 I want to define my own OTel exporter backend,
@@ -1901,7 +2216,7 @@ So that metrics go to my preferred observability platform.
 
 ---
 
-### Story 11.7: Implement Telemetry Status Command
+### Story 13.7: Implement Telemetry Status Command
 
 As an **operator**,
 I want to check telemetry status,
@@ -1918,7 +2233,7 @@ So that I know if monitoring is working.
 
 ---
 
-### Story 11.8: Implement Telemetry Enable/Disable Commands
+### Story 13.8: Implement Telemetry Enable/Disable Commands
 
 As an **operator**,
 I want to toggle telemetry via CLI,
@@ -1936,7 +2251,7 @@ So that I can quickly enable/disable monitoring.
 
 ---
 
-### Story 11.9: Implement Telemetry Exporters Command
+### Story 13.9: Implement Telemetry Exporters Command
 
 As an **operator**,
 I want to view and edit exporter configuration,
@@ -1954,7 +2269,7 @@ So that I can manage where metrics are sent.
 
 ---
 
-### Story 11.10: Implement Telemetry Test Command
+### Story 13.10: Implement Telemetry Test Command
 
 As an **operator**,
 I want to test backend connectivity,
@@ -1971,11 +2286,11 @@ So that I can verify my exporter config works.
 
 ---
 
-## Epic 12: Model Management & Benchmarking - Stories
+## Epic 14: Model Management & Benchmarking - Stories
 
 Operator can switch between LLM models (accuracy vs speed tradeoff) and benchmark classification performance to make informed decisions.
 
-### Story 12.1: Implement Model Show Command
+### Story 14.1: Implement Model Show Command
 
 As an **operator**,
 I want to see the current classification model,
@@ -1991,7 +2306,7 @@ So that I know what's being used.
 
 ---
 
-### Story 12.2: Implement Model Switch Command
+### Story 14.2: Implement Model Switch Command
 
 As an **operator**,
 I want to switch to a different LLM model,
@@ -2009,7 +2324,7 @@ So that I can balance accuracy vs speed.
 
 ---
 
-### Story 12.3: Implement Model List Command
+### Story 14.3: Implement Model List Command
 
 As an **operator**,
 I want to see available models,
@@ -2026,7 +2341,7 @@ So that I know my options.
 
 ---
 
-### Story 12.4: Implement Benchmark Sample Command
+### Story 14.4: Implement Benchmark Sample Command
 
 As an **operator**,
 I want to benchmark classification on a sample,
@@ -2047,7 +2362,7 @@ So that I can measure model performance.
 
 ---
 
-### Story 12.5: Implement Benchmark Repos Command
+### Story 14.5: Implement Benchmark Repos Command
 
 As an **operator**,
 I want to benchmark specific repos,
@@ -2063,7 +2378,7 @@ So that I can test classification on known repos.
 
 ---
 
-### Story 12.6: Implement Benchmark Compare Command
+### Story 14.6: Implement Benchmark Compare Command
 
 As an **operator**,
 I want to compare models side-by-side,
@@ -2081,7 +2396,7 @@ So that I can make informed model choices.
 
 ---
 
-### Story 12.7: Store Benchmark Results
+### Story 14.7: Store Benchmark Results
 
 As the **system**,
 I want to persist benchmark results,
@@ -2097,7 +2412,7 @@ So that operators can review historical performance.
 
 ---
 
-### Story 12.8: Display Benchmark Report
+### Story 14.8: Display Benchmark Report
 
 As an **operator**,
 I want a clear benchmark report,

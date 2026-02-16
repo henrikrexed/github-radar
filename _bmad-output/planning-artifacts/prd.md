@@ -2,8 +2,10 @@
 stepsCompleted: ['step-01-init', 'step-02-discovery', 'step-03-success', 'step-04-journeys', 'step-05-domain', 'step-06-innovation', 'step-07-project-type', 'step-08-scoping', 'step-09-functional', 'step-10-nonfunctional', 'step-11-polish', 'step-12-complete', 'step-e-01-discovery', 'step-e-02-review', 'step-e-03-edit']
 workflowStatus: complete
 completedAt: 2026-02-14
-lastEdited: 2026-02-15
+lastEdited: 2026-02-16
 editHistory:
+  - date: 2026-02-16
+    changes: "Added Documentation requirements (FR56-FR61): README with token guide, getting started, command examples, daemon setup; MkDocs site. Added CI/CD Pipeline requirements (FR62-FR67): GitHub Actions for build, test, quality checks, security scans, release artifacts. Added NFR21-NFR22. Updated MVP scope to R1-R11."
   - date: 2026-02-15
     changes: "Zero-config trend discovery (removed topic filtering from MVP); Quality Assurance integrated throughout (unit tests, integration tests, edge cases); Categorization moved to post-MVP with database/Redis storage note"
 inputDocuments:
@@ -104,6 +106,8 @@ classification:
 6. **JSON State File** - Week-over-week delta tracking (no database)
 7. **Structured Logging** - Debug mode for scan details, ERROR for issues
 8. **Quality Assurance** - Unit tests (≥80% coverage), integration tests with real repo fixtures, edge case coverage
+9. **Documentation** - Comprehensive README (token setup, getting started, command examples, daemon guide) + MkDocs documentation site
+10. **CI/CD Pipeline** - GitHub Actions for build, test, quality checks, security scans, and release artifact creation
 
 ### Growth Features (Post-MVP)
 
@@ -368,7 +372,7 @@ scoring:
 - J3: Initial Setup (config-driven)
 - J4: Scan Failure (error handling)
 
-**Must-Have Capabilities (R1-R9):**
+**Must-Have Capabilities (R1-R11):**
 - Repository tracking with categories (R1)
 - Topic-based discovery with filters (R2)
 - GitHub data collection with rate limiting (R3)
@@ -378,6 +382,8 @@ scoring:
 - CLI interface with core commands (R7)
 - YAML configuration with env vars (R8)
 - Graceful error handling (R9)
+- Documentation: README + MkDocs site (R10)
+- CI/CD: GitHub Actions pipeline (R11)
 
 ### Post-MVP Features
 
@@ -487,6 +493,24 @@ scoring:
 - FR54: System exits with code 0 on success, code 1 on fatal errors
 - FR55: System can run in dry-run mode (collect but don't export)
 
+### Documentation
+
+- FR56: Project includes a comprehensive README with getting started guide, prerequisites, and installation instructions
+- FR57: README documents GitHub token generation process with step-by-step instructions
+- FR58: README includes CLI command examples for all available commands (collect, discover, add, remove, list, serve)
+- FR59: README documents daemon setup, configuration options, and scheduling
+- FR60: Project provides a MkDocs documentation site with structured user guide, architecture overview, and configuration reference
+- FR61: MkDocs site is deployable to GitHub Pages for public access
+
+### CI/CD Pipeline
+
+- FR62: GitHub Actions workflow builds the project on every push and pull request
+- FR63: GitHub Actions workflow runs the full test suite on every push and pull request
+- FR64: GitHub Actions workflow runs code quality checks (go vet, staticcheck, gofmt validation)
+- FR65: GitHub Actions workflow runs security vulnerability scanning (govulncheck)
+- FR66: GitHub Actions workflow creates cross-platform release binaries on tag push (linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64)
+- FR67: GitHub Actions workflow publishes release artifacts as GitHub Release assets
+
 ## Non-Functional Requirements
 
 ### Integration
@@ -520,3 +544,8 @@ scoring:
 - NFR18: Edge case scenarios must have dedicated test coverage: rate limiting, API failures, malformed responses
 - NFR19: Test suite must execute automatically in CI pipeline on every pull request
 - NFR20: Integration tests must use real GitHub API calls against stable reference repositories
+
+### Documentation & Developer Experience
+
+- NFR21: All user-facing documentation must be kept in sync with the current CLI behavior and configuration schema
+- NFR22: CI/CD pipeline must block merges on test failures, quality violations, or known security vulnerabilities

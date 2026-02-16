@@ -1,0 +1,49 @@
+site_name: GitHub Radar
+site_description: Open Source Growth Intelligence - Detect trending GitHub projects before they go viral
+site_url: https://hrexed.github.io/github-radar
+repo_url: https://github.com/hrexed/github-radar
+repo_name: hrexed/github-radar
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Configuration: configuration.md
+  - CLI Reference: cli-reference.md
+  - Daemon Guide: daemon-guide.md
+  - OpenTelemetry Integration: otel-integration.md
+  - Architecture: architecture.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - tables
+  - toc:
+      permalink: true
