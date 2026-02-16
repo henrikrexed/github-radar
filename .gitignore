@@ -1,7 +1,7 @@
 # Binaries
 bin/
 *.exe
-github-radar
+/github-radar
 
 # Dependencies
 vendor/
