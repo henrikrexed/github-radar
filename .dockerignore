@@ -1,0 +1,11 @@
+.git
+.github
+bin
+dist
+data
+coverage.out
+coverage.html
+*.md
+!docs/**
+_bmad*
+.claude
