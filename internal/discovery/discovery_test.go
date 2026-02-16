@@ -316,7 +316,7 @@ func TestDiscoverer_AutoTrack(t *testing.T) {
 	// Verify it was added to state
 	repoState := store.GetRepoState("foo/new-repo")
 	if repoState == nil {
-		t.Error("expected repo to be added to state")
+		t.Fatal("expected repo to be added to state")
 	}
 	if repoState.Owner != "foo" || repoState.Name != "new-repo" {
 		t.Errorf("unexpected repo state: %+v", repoState)
