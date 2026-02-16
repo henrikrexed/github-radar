@@ -150,7 +150,7 @@ scrape_configs:
 Test your configuration without actually exporting metrics:
 
 ```bash
-github-radar collect --config config.yaml --dry-run
+github-radar serve --config config.yaml --dry-run
 ```
 
 In dry-run mode, all data is collected and scored, but metrics are not sent to the OTLP endpoint. State is still saved.

@@ -80,8 +80,33 @@ func (c *CLI) Run(args []string) int {
 	return 0
 }
 
+// extractGlobalFlags removes global flags (--verbose, --dry-run, --config)
+// from subcommand args and applies them to the CLI struct.
+// This allows users to place global flags after the subcommand name.
+func (c *CLI) extractGlobalFlags(args []string) []string {
+	var filtered []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--verbose":
+			c.Verbose = true
+			logging.Init(true)
+		case "--dry-run":
+			c.DryRun = true
+		case "--config":
+			if i+1 < len(args) {
+				c.ConfigPath = args[i+1]
+				i++ // skip value
+			}
+		default:
+			filtered = append(filtered, args[i])
+		}
+	}
+	return filtered
+}
+
 // runCommand executes a subcommand.
 func (c *CLI) runCommand(cmd string, args []string) int {
+	args = c.extractGlobalFlags(args)
 	switch cmd {
 	case "config":
 		return c.runConfigCommand(args)

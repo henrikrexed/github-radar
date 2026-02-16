@@ -113,24 +113,11 @@ cp configs/github-radar.example.yaml config.yaml
 # 3. Discover trending repositories (dry-run, no OTel needed)
 github-radar discover --config config.yaml --topics kubernetes,ebpf --dry-run
 
-# 4. Run a full scan with metrics export
-github-radar collect --config config.yaml
-
-# 5. Or start the background daemon
+# 4. Start the background daemon for scheduled scanning
 github-radar serve --config config.yaml --interval 6h
 ```
 
 ## CLI Commands
-
-### `github-radar collect`
-
-Run a full collection cycle: scan all tracked repositories, calculate growth scores, and export metrics.
-
-```bash
-github-radar collect --config config.yaml
-github-radar collect --config config.yaml --dry-run      # Collect without exporting metrics
-github-radar collect --config config.yaml --verbose       # Enable debug logging
-```
 
 ### `github-radar discover`
 
@@ -376,12 +363,7 @@ docker-compose down
 
 ### Cron Alternative
 
-If you prefer one-shot scans over a daemon:
-
-```bash
-# Weekly scan every Monday at 6 AM
-0 6 * * 1 GITHUB_TOKEN=ghp_xxx /usr/local/bin/github-radar collect --config /etc/github-radar/config.yaml
-```
+If you prefer scheduled scans via cron rather than a long-running daemon, see the [Daemon Guide](docs/daemon-guide.md#cron-alternative).
 
 ## OpenTelemetry Integration
 

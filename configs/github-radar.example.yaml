@@ -8,7 +8,7 @@ github:
 otel:
   endpoint: http://localhost:4318
   headers:
-    Authorization: "Api-Token ${DT_API_TOKEN}"
+    Authorization: "Api-Token ${DT_API_TOKEN:-}"
   service_name: github-radar
 
 discovery:
@@ -44,4 +44,4 @@ repositories:
       - monitoring
       - visualization
   # Repo without categories uses "default"
-  - repo: opentelemetry/opentelemetry-go
+  - repo: open-telemetry/opentelemetry-go

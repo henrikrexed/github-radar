@@ -23,12 +23,32 @@ func NewRepoCmd(cli *CLI) *RepoCmd {
 	return &RepoCmd{cli: cli}
 }
 
+// reorderFlags moves flag arguments before positional arguments so that
+// Go's flag package can parse them. For example:
+// ["cilium/cilium", "--category", "cncf"] -> ["--category", "cncf", "cilium/cilium"]
+func reorderFlags(args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "-") {
+			flags = append(flags, args[i])
+			// If this flag expects a value (not a boolean flag), grab the next arg too
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				flags = append(flags, args[i+1])
+				i++
+			}
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+	return append(flags, positional...)
+}
+
 // Add adds a repository to tracking.
 func (r *RepoCmd) Add(args []string) int {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	category := fs.String("category", "", "Category for the repository")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderFlags(args)); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
@@ -87,7 +107,7 @@ func (r *RepoCmd) Remove(args []string) int {
 	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
 	keepState := fs.Bool("keep-state", false, "Preserve state data for the repository")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderFlags(args)); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}

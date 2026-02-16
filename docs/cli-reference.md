@@ -12,23 +12,6 @@ These flags apply to all commands:
 
 ## Commands
 
-### collect
-
-Run a full collection cycle: scan tracked repositories, calculate growth scores, and export metrics via OTLP.
-
-```bash
-github-radar collect --config config.yaml
-github-radar collect --config config.yaml --dry-run
-github-radar collect --config config.yaml --verbose
-```
-
-**Exit codes:**
-
-- `0` — Success (including partial success with some repo failures)
-- `1` — Fatal error (config invalid, auth failure)
-
----
-
 ### discover
 
 Discover trending repositories from GitHub Search API.

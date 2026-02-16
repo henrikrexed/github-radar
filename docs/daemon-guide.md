@@ -222,15 +222,19 @@ spec:
 
 ## Cron Alternative
 
-If you prefer one-shot scans over a long-running daemon:
+If you prefer scheduled scans via cron rather than a long-running daemon, use the `serve` command with a short-lived wrapper:
 
 ```bash
 # Weekly scan every Monday at 6 AM
-0 6 * * 1 GITHUB_TOKEN=ghp_xxx /usr/local/bin/github-radar collect --config /etc/github-radar/config.yaml
+0 6 * * 1 GITHUB_TOKEN=ghp_xxx /usr/local/bin/github-radar serve --config /etc/github-radar/config.yaml --interval 1s &
+  sleep 120 && kill $!
 
 # Daily scan at midnight
-0 0 * * * GITHUB_TOKEN=ghp_xxx /usr/local/bin/github-radar collect --config /etc/github-radar/config.yaml
+0 0 * * * GITHUB_TOKEN=ghp_xxx /usr/local/bin/github-radar serve --config /etc/github-radar/config.yaml --interval 1s &
+  sleep 120 && kill $!
 ```
+
+> **Note:** There is no one-shot `collect` command. The `serve` command runs an initial scan on startup and then continues on the configured interval. For cron-based usage, start `serve` and terminate it after the first scan completes.
 
 ## Scan Overlap Prevention
 
