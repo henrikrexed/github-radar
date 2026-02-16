@@ -1,25 +1,24 @@
 # Build stage
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
-ARG TARGETARCH
 ARG VERSION=dev
 
 WORKDIR /app
 
-# Copy go mod files
+# Copy go mod files first for caching
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download && go mod verify
 
 # Copy source code
 COPY . .
 
-# Build binary for target platform
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+# Build binary
+RUN CGO_ENABLED=0 go build \
     -ldflags="-w -s -X main.Version=${VERSION}" \
     -o /github-radar ./cmd/github-radar
 
 # Runtime stage
-FROM alpine:3.19
+FROM alpine:3.21
 
 # Install ca-certificates for HTTPS and wget for health checks
 RUN apk --no-cache add ca-certificates wget
