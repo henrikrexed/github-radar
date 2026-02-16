@@ -78,14 +78,14 @@ func TestStore_LargeStateSave_Duration(t *testing.T) {
 	store := NewStore(path)
 	for i := 0; i < 1000; i++ {
 		store.SetRepoState(fmt.Sprintf("org/repo-%d", i), RepoState{
-			Owner:             "org",
-			Name:              fmt.Sprintf("repo-%d", i),
-			Stars:             i * 10,
-			Forks:             i * 2,
-			StarVelocity:      float64(i) * 1.5,
-			GrowthScore:       float64(i) * 2.0,
-			ETag:              fmt.Sprintf(`"etag-%d"`, i),
-			LastCollected:     time.Now(),
+			Owner:         "org",
+			Name:          fmt.Sprintf("repo-%d", i),
+			Stars:         i * 10,
+			Forks:         i * 2,
+			StarVelocity:  float64(i) * 1.5,
+			GrowthScore:   float64(i) * 2.0,
+			ETag:          fmt.Sprintf(`"etag-%d"`, i),
+			LastCollected: time.Now(),
 		})
 	}
 
@@ -127,14 +127,14 @@ func TestStore_5000Repos_ScalingTest(t *testing.T) {
 	store := NewStore(path)
 	for i := 0; i < 5000; i++ {
 		store.SetRepoState(fmt.Sprintf("org-%d/repo-%d", i/100, i), RepoState{
-			Owner:             fmt.Sprintf("org-%d", i/100),
-			Name:              fmt.Sprintf("repo-%d", i),
-			Stars:             i * 10,
-			Forks:             i * 2,
-			StarVelocity:      float64(i) * 1.5,
-			GrowthScore:       float64(i) * 2.0,
-			ETag:              fmt.Sprintf(`"etag-%d"`, i),
-			LastCollected:     time.Now(),
+			Owner:         fmt.Sprintf("org-%d", i/100),
+			Name:          fmt.Sprintf("repo-%d", i),
+			Stars:         i * 10,
+			Forks:         i * 2,
+			StarVelocity:  float64(i) * 1.5,
+			GrowthScore:   float64(i) * 2.0,
+			ETag:          fmt.Sprintf(`"etag-%d"`, i),
+			LastCollected: time.Now(),
 		})
 	}
 

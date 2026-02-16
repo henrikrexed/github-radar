@@ -57,27 +57,27 @@ func TestDiscovery_FindsReposByTopic(t *testing.T) {
 			"items": []map[string]interface{}{
 				{
 					"owner": map[string]string{"login": "cncf"},
-					"name": "kubernetes", "full_name": "cncf/kubernetes",
+					"name":  "kubernetes", "full_name": "cncf/kubernetes",
 					"description": "Container orchestration",
-					"language": "Go", "topics": []string{"kubernetes", "containers"},
+					"language":    "Go", "topics": []string{"kubernetes", "containers"},
 					"stargazers_count": 10000, "forks_count": 5000,
 					"created_at": time.Now().AddDate(0, -2, 0).Format(time.RFC3339),
 					"updated_at": time.Now().AddDate(0, 0, -1).Format(time.RFC3339),
 				},
 				{
 					"owner": map[string]string{"login": "helm"},
-					"name": "helm", "full_name": "helm/helm",
+					"name":  "helm", "full_name": "helm/helm",
 					"description": "Kubernetes package manager",
-					"language": "Go", "topics": []string{"kubernetes", "helm"},
+					"language":    "Go", "topics": []string{"kubernetes", "helm"},
 					"stargazers_count": 5000, "forks_count": 2000,
 					"created_at": time.Now().AddDate(0, -1, 0).Format(time.RFC3339),
 					"updated_at": time.Now().AddDate(0, 0, -2).Format(time.RFC3339),
 				},
 				{
 					"owner": map[string]string{"login": "istio"},
-					"name": "istio", "full_name": "istio/istio",
+					"name":  "istio", "full_name": "istio/istio",
 					"description": "Service mesh",
-					"language": "Go", "topics": []string{"kubernetes", "service-mesh"},
+					"language":    "Go", "topics": []string{"kubernetes", "service-mesh"},
 					"stargazers_count": 3000, "forks_count": 1500,
 					"created_at": time.Now().AddDate(0, -1, -15).Format(time.RFC3339),
 					"updated_at": time.Now().AddDate(0, 0, -3).Format(time.RFC3339),
@@ -197,7 +197,7 @@ func TestDiscovery_FiltersOldRepos(t *testing.T) {
 			"items": []map[string]interface{}{
 				{
 					"owner": map[string]string{"login": "new"},
-					"name": "repo", "full_name": "new/repo",
+					"name":  "repo", "full_name": "new/repo",
 					"description": "Recent", "language": "Go", "topics": []string{},
 					"stargazers_count": 500, "forks_count": 50,
 					"created_at": time.Now().AddDate(0, -1, 0).Format(time.RFC3339), // 1 month old
@@ -205,7 +205,7 @@ func TestDiscovery_FiltersOldRepos(t *testing.T) {
 				},
 				{
 					"owner": map[string]string{"login": "old"},
-					"name": "repo", "full_name": "old/repo",
+					"name":  "repo", "full_name": "old/repo",
 					"description": "Ancient", "language": "Go", "topics": []string{},
 					"stargazers_count": 500, "forks_count": 50,
 					"created_at": time.Now().AddDate(-1, 0, 0).Format(time.RFC3339), // 1 year old
@@ -291,7 +291,7 @@ func TestDiscovery_FullPipeline_DiscoverFilterTrack(t *testing.T) {
 			"items": []map[string]interface{}{
 				{
 					"owner": map[string]string{"login": "hot"},
-					"name": "project", "full_name": "hot/project",
+					"name":  "project", "full_name": "hot/project",
 					"description": "Hot project", "language": "Rust", "topics": []string{"wasm"},
 					"stargazers_count": 2000, "forks_count": 200,
 					"created_at": time.Now().AddDate(0, -1, 0).Format(time.RFC3339),
@@ -299,7 +299,7 @@ func TestDiscovery_FullPipeline_DiscoverFilterTrack(t *testing.T) {
 				},
 				{
 					"owner": map[string]string{"login": "small"},
-					"name": "lib", "full_name": "small/lib",
+					"name":  "lib", "full_name": "small/lib",
 					"description": "Small lib", "language": "Go", "topics": []string{"wasm"},
 					"stargazers_count": 50, "forks_count": 5, // Below MinStars
 					"created_at": time.Now().AddDate(0, -1, 0).Format(time.RFC3339),
@@ -307,7 +307,7 @@ func TestDiscovery_FullPipeline_DiscoverFilterTrack(t *testing.T) {
 				},
 				{
 					"owner": map[string]string{"login": "excluded"},
-					"name": "tool", "full_name": "excluded/tool",
+					"name":  "tool", "full_name": "excluded/tool",
 					"description": "Excluded tool", "language": "Go", "topics": []string{"wasm"},
 					"stargazers_count": 500, "forks_count": 50,
 					"created_at": time.Now().AddDate(0, -1, 0).Format(time.RFC3339),
@@ -393,9 +393,9 @@ func TestDiscovery_MultiTopicDeduplication(t *testing.T) {
 			"items": []map[string]interface{}{
 				{
 					"owner": map[string]string{"login": "shared"},
-					"name": "repo", "full_name": "shared/repo",
+					"name":  "repo", "full_name": "shared/repo",
 					"description": "Appears in all topics",
-					"language": "Go", "topics": []string{"kubernetes", "ebpf"},
+					"language":    "Go", "topics": []string{"kubernetes", "ebpf"},
 					"stargazers_count": 500, "forks_count": 50,
 					"created_at": time.Now().AddDate(0, -1, 0).Format(time.RFC3339),
 					"updated_at": time.Now().AddDate(0, 0, -1).Format(time.RFC3339),
