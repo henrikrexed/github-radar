@@ -92,10 +92,7 @@ GitHub Radar requires a Personal Access Token for the GitHub API. Authenticated 
 2. Click **"Generate new token"**
 3. Set token name and expiration
 4. Under **Repository access**, select **"Public Repositories (read-only)"**
-5. Under **Permissions**, grant:
-      - Repository permissions → **Metadata** — Read-only
-      - Repository permissions → **Issues** — Read-only
-      - Repository permissions → **Pull requests** — Read-only
+5. No additional permissions are needed — "Public Repositories (read-only)" already grants read access to metadata, issues, and pull requests for all public repositories
 6. Click **"Generate token"**
 
 ### Set the Token
