@@ -95,3 +95,20 @@ jobs:
 
       - name: Run vulnerability check
         run: govulncheck ./...
+
+  docs:
+    name: Docs Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs and dependencies
+        run: pip install mkdocs-material
+
+      - name: Build docs (strict mode)
+        run: mkdocs build --strict
