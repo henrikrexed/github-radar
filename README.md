@@ -1,7 +1,7 @@
 # GitHub Radar
 
-[![CI](https://github.com/hrexed/github-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/hrexed/github-radar/actions/workflows/ci.yml)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/hrexed/github-radar)](https://go.dev/)
+[![CI](https://github.com/henrikrexed/github-radar/actions/workflows/ci.yml/badge.svg)](https://github.com/henrikrexed/github-radar/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/henrikrexed/github-radar)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Open Source Growth Intelligence** — Detect trending GitHub projects before they go viral.
@@ -26,21 +26,21 @@ GitHub Radar scans GitHub for repositories showing unusual growth patterns (star
 
 ### Download Binary
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/hrexed/github-radar/releases):
+Download the latest release for your platform from [GitHub Releases](https://github.com/henrikrexed/github-radar/releases):
 
 ```bash
 # Linux (amd64)
-curl -Lo github-radar https://github.com/hrexed/github-radar/releases/latest/download/github-radar-linux-amd64
+curl -Lo github-radar https://github.com/henrikrexed/github-radar/releases/latest/download/github-radar-linux-amd64
 chmod +x github-radar
 sudo mv github-radar /usr/local/bin/
 
 # macOS (Apple Silicon)
-curl -Lo github-radar https://github.com/hrexed/github-radar/releases/latest/download/github-radar-darwin-arm64
+curl -Lo github-radar https://github.com/henrikrexed/github-radar/releases/latest/download/github-radar-darwin-arm64
 chmod +x github-radar
 sudo mv github-radar /usr/local/bin/
 
 # macOS (Intel)
-curl -Lo github-radar https://github.com/hrexed/github-radar/releases/latest/download/github-radar-darwin-amd64
+curl -Lo github-radar https://github.com/henrikrexed/github-radar/releases/latest/download/github-radar-darwin-amd64
 chmod +x github-radar
 sudo mv github-radar /usr/local/bin/
 ```
@@ -50,7 +50,7 @@ sudo mv github-radar /usr/local/bin/
 Requires Go 1.22+:
 
 ```bash
-git clone https://github.com/hrexed/github-radar.git
+git clone https://github.com/henrikrexed/github-radar.git
 cd github-radar
 make build
 # Binary is at ./bin/github-radar
@@ -59,7 +59,7 @@ make build
 ### Docker
 
 ```bash
-docker pull ghcr.io/hrexed/github-radar:latest
+docker pull ghcr.io/henrikrexed/github-radar:latest
 
 # Or build locally
 make docker

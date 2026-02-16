@@ -2,12 +2,12 @@
 
 ## Download Binary
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/hrexed/github-radar/releases).
+Download the latest release for your platform from [GitHub Releases](https://github.com/henrikrexed/github-radar/releases).
 
 === "Linux (amd64)"
 
     ```bash
-    curl -Lo github-radar https://github.com/hrexed/github-radar/releases/latest/download/github-radar-linux-amd64
+    curl -Lo github-radar https://github.com/henrikrexed/github-radar/releases/latest/download/github-radar-linux-amd64
     chmod +x github-radar
     sudo mv github-radar /usr/local/bin/
     ```
@@ -15,7 +15,7 @@ Download the latest release for your platform from [GitHub Releases](https://git
 === "Linux (arm64)"
 
     ```bash
-    curl -Lo github-radar https://github.com/hrexed/github-radar/releases/latest/download/github-radar-linux-arm64
+    curl -Lo github-radar https://github.com/henrikrexed/github-radar/releases/latest/download/github-radar-linux-arm64
     chmod +x github-radar
     sudo mv github-radar /usr/local/bin/
     ```
@@ -23,7 +23,7 @@ Download the latest release for your platform from [GitHub Releases](https://git
 === "macOS (Apple Silicon)"
 
     ```bash
-    curl -Lo github-radar https://github.com/hrexed/github-radar/releases/latest/download/github-radar-darwin-arm64
+    curl -Lo github-radar https://github.com/henrikrexed/github-radar/releases/latest/download/github-radar-darwin-arm64
     chmod +x github-radar
     sudo mv github-radar /usr/local/bin/
     ```
@@ -31,21 +31,21 @@ Download the latest release for your platform from [GitHub Releases](https://git
 === "macOS (Intel)"
 
     ```bash
-    curl -Lo github-radar https://github.com/hrexed/github-radar/releases/latest/download/github-radar-darwin-amd64
+    curl -Lo github-radar https://github.com/henrikrexed/github-radar/releases/latest/download/github-radar-darwin-amd64
     chmod +x github-radar
     sudo mv github-radar /usr/local/bin/
     ```
 
 === "Windows"
 
-    Download `github-radar-windows-amd64.exe` from the [releases page](https://github.com/hrexed/github-radar/releases) and add it to your `PATH`.
+    Download `github-radar-windows-amd64.exe` from the [releases page](https://github.com/henrikrexed/github-radar/releases) and add it to your `PATH`.
 
 ## Build from Source
 
 Requires **Go 1.22+**.
 
 ```bash
-git clone https://github.com/hrexed/github-radar.git
+git clone https://github.com/henrikrexed/github-radar.git
 cd github-radar
 make build
 ```
@@ -56,10 +56,10 @@ The binary is built to `./bin/github-radar`.
 
 ```bash
 # Pull from registry
-docker pull ghcr.io/hrexed/github-radar:latest
+docker pull ghcr.io/henrikrexed/github-radar:latest
 
 # Or build locally
-git clone https://github.com/hrexed/github-radar.git
+git clone https://github.com/henrikrexed/github-radar.git
 cd github-radar
 make docker
 ```

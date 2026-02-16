@@ -1,8 +1,8 @@
 site_name: GitHub Radar
 site_description: Open Source Growth Intelligence - Detect trending GitHub projects before they go viral
 site_url: https://hrexed.github.io/github-radar
-repo_url: https://github.com/hrexed/github-radar
-repo_name: hrexed/github-radar
+repo_url: https://github.com/henrikrexed/github-radar
+repo_name: henrikrexed/github-radar
 
 theme:
   name: material

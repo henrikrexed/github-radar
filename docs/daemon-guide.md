@@ -177,7 +177,7 @@ spec:
     spec:
       containers:
         - name: github-radar
-          image: ghcr.io/hrexed/github-radar:latest
+          image: ghcr.io/henrikrexed/github-radar:latest
           args:
             - serve
             - --config

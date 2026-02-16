@@ -13,7 +13,7 @@ Contributions to GitHub Radar are welcome.
 ### Getting Started
 
 ```bash
-git clone https://github.com/hrexed/github-radar.git
+git clone https://github.com/henrikrexed/github-radar.git
 cd github-radar
 make build
 make test
