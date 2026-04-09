@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -90,4 +91,17 @@ func ResolveConfigPath(explicitPath string) string {
 func LoadFromPath(explicitPath string) (*Config, error) {
 	path := ResolveConfigPath(explicitPath)
 	return Load(path)
+}
+
+// SaveToPath marshals the config to YAML and writes it to the resolved path.
+func SaveToPath(explicitPath string, cfg *Config) error {
+	path := ResolveConfigPath(explicitPath)
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshalling config: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("writing config to %s: %w", path, err)
+	}
+	return nil
 }

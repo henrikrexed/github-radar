@@ -128,6 +128,9 @@ func (c *CLI) runCommand(cmd string, args []string) int {
 	case "serve":
 		serveCmd := NewServeCmd(c)
 		return serveCmd.Run(args)
+	case "classify":
+		classifyCmd := NewClassifyCmd(c)
+		return classifyCmd.Run(args)
 	case "status":
 		statusCmd := NewStatusCmd(c)
 		return statusCmd.Run(args)
@@ -178,6 +181,11 @@ Commands:
   discover           Discover trending repositories by topic
                      Options: --topics, --min-stars, --max-age, --threshold,
                               --auto-track, --format <table|json|csv>
+  classify           Classify pending repositories using Ollama LLM
+                     Options: --dry-run (show repos without calling LLM)
+  classify test <repo>  Test classification for a single repo (verbose, no DB save)
+  classify model     Show the current classification model
+  classify model <name> Set classification model and queue all repos for reclassification
   serve              Start the daemon for scheduled scanning
                      Options: --interval <duration>, --http-addr <addr>,
                               --state <path>
