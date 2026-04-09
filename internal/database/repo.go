@@ -380,7 +380,7 @@ func (d *DB) MarkAllNeedsReclassify() (int64, error) {
 
 	result, err := d.db.Exec(`
 		UPDATE repos SET status = 'needs_reclassify'
-		WHERE status = 'classified' AND excluded = 0 AND force_category = ''`)
+		WHERE status = 'active' AND excluded = 0 AND force_category = ''`)
 	if err != nil {
 		return 0, fmt.Errorf("marking repos needs_reclassify: %w", err)
 	}

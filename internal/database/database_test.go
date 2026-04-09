@@ -825,7 +825,7 @@ func TestMarkAllNeedsReclassify(t *testing.T) {
 	db := mustOpen(t)
 
 	repos := []*RepoRecord{
-		{FullName: "a/classified", Owner: "a", Name: "classified", Status: "classified", PrimaryCategory: "observability"},
+		{FullName: "a/classified", Owner: "a", Name: "classified", Status: "active", PrimaryCategory: "observability"},
 		{FullName: "b/pending", Owner: "b", Name: "pending", Status: "pending", PrimaryCategory: ""},
 		{FullName: "c/excluded", Owner: "c", Name: "excluded", Status: "active", PrimaryCategory: "networking", Excluded: 1},
 		{FullName: "d/forced", Owner: "d", Name: "forced", Status: "active", PrimaryCategory: "ai-agents", ForceCategory: "ai-agents"},
