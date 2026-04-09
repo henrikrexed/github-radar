@@ -250,16 +250,7 @@ func (c *ClassifyCmd) runModel(args []string) int {
 		return 0
 	}
 
-	// Update model in config and save
-	cfg.Classification.Model = newModel
-	if err := config.SaveToPath(c.cli.ConfigPath, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		return 1
-	}
-
-	fmt.Printf("Classification model changed: %s -> %s\n", oldModel, newModel)
-
-	// Mark all classified repos as needs_reclassify
+	// Mark all classified repos as needs_reclassify (DB first, config second)
 	db, err := database.Open("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
@@ -273,6 +264,14 @@ func (c *ClassifyCmd) runModel(args []string) int {
 		return 1
 	}
 
+	// Update model in config and save
+	cfg.Classification.Model = newModel
+	if err := config.SaveToPath(c.cli.ConfigPath, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Classification model changed: %s -> %s\n", oldModel, newModel)
 	fmt.Printf("Queued %d repos for reclassification\n", count)
 	return 0
 }
