@@ -698,6 +698,192 @@ func TestTopicsSlice(t *testing.T) {
 	}
 }
 
+// Story 11.7: Classification and reclassification triggers
+
+func TestClassifiedRepos(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		{FullName: "a/active", Owner: "a", Name: "active", Status: "active", PrimaryCategory: "observability", ReadmeHash: "abc123"},
+		{FullName: "b/pending", Owner: "b", Name: "pending", Status: "pending", PrimaryCategory: ""},
+		{FullName: "c/review", Owner: "c", Name: "review", Status: "needs_review", PrimaryCategory: "networking"},
+		{FullName: "d/excluded", Owner: "d", Name: "excluded", Status: "active", PrimaryCategory: "kubernetes", Excluded: 1},
+		{FullName: "e/forced", Owner: "e", Name: "forced", Status: "active", PrimaryCategory: "ai-agents", ForceCategory: "ai-agents"},
+		{FullName: "f/active2", Owner: "f", Name: "active2", Status: "active", PrimaryCategory: "llm-tooling", ReadmeHash: "def456"},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo(%s): %v", r.FullName, err)
+		}
+	}
+
+	got, err := db.ClassifiedRepos()
+	if err != nil {
+		t.Fatalf("ClassifiedRepos: %v", err)
+	}
+	// Should only return active repos that are not excluded and have no force_category
+	if len(got) != 2 {
+		t.Errorf("ClassifiedRepos returned %d repos, want 2", len(got))
+		for _, r := range got {
+			t.Logf("  got: %s (status=%s, category=%s)", r.FullName, r.Status, r.PrimaryCategory)
+		}
+	}
+}
+
+func TestUpdateReadmeHash_Changed(t *testing.T) {
+	db := mustOpen(t)
+
+	repo := &RepoRecord{
+		FullName:        "test/repo",
+		Owner:           "test",
+		Name:            "repo",
+		Status:          "active",
+		PrimaryCategory: "observability",
+		ReadmeHash:      "oldhash123",
+	}
+	if err := db.UpsertRepo(repo); err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	changed, err := db.UpdateReadmeHash("test/repo", "newhash456")
+	if err != nil {
+		t.Fatalf("UpdateReadmeHash: %v", err)
+	}
+	if !changed {
+		t.Error("expected changed=true when hash differs")
+	}
+
+	got, err := db.GetRepo("test/repo")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if got.ReadmeHash != "newhash456" {
+		t.Errorf("ReadmeHash = %q, want %q", got.ReadmeHash, "newhash456")
+	}
+	if got.Status != "needs_reclassify" {
+		t.Errorf("Status = %q, want %q", got.Status, "needs_reclassify")
+	}
+}
+
+func TestUpdateReadmeHash_Unchanged(t *testing.T) {
+	db := mustOpen(t)
+
+	repo := &RepoRecord{
+		FullName:        "test/repo",
+		Owner:           "test",
+		Name:            "repo",
+		Status:          "active",
+		PrimaryCategory: "observability",
+		ReadmeHash:      "samehash",
+	}
+	if err := db.UpsertRepo(repo); err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	changed, err := db.UpdateReadmeHash("test/repo", "samehash")
+	if err != nil {
+		t.Fatalf("UpdateReadmeHash: %v", err)
+	}
+	if changed {
+		t.Error("expected changed=false when hash is the same")
+	}
+
+	got, err := db.GetRepo("test/repo")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want %q (should not change)", got.Status, "active")
+	}
+}
+
+func TestUpdateReadmeHash_SkipsEmptyHash(t *testing.T) {
+	db := mustOpen(t)
+
+	// Repo with empty readme_hash (initial state) should not trigger reclassify
+	repo := &RepoRecord{
+		FullName:   "test/repo",
+		Owner:      "test",
+		Name:       "repo",
+		Status:     "pending",
+		ReadmeHash: "",
+	}
+	if err := db.UpsertRepo(repo); err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	changed, err := db.UpdateReadmeHash("test/repo", "newhash")
+	if err != nil {
+		t.Fatalf("UpdateReadmeHash: %v", err)
+	}
+	if changed {
+		t.Error("expected changed=false when old hash is empty (initial classification)")
+	}
+}
+
+func TestMarkAllNeedsReclassify(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		{FullName: "a/classified", Owner: "a", Name: "classified", Status: "active", PrimaryCategory: "observability"},
+		{FullName: "b/pending", Owner: "b", Name: "pending", Status: "pending", PrimaryCategory: ""},
+		{FullName: "c/excluded", Owner: "c", Name: "excluded", Status: "active", PrimaryCategory: "networking", Excluded: 1},
+		{FullName: "d/forced", Owner: "d", Name: "forced", Status: "active", PrimaryCategory: "ai-agents", ForceCategory: "ai-agents"},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo(%s): %v", r.FullName, err)
+		}
+	}
+
+	count, err := db.MarkAllNeedsReclassify()
+	if err != nil {
+		t.Fatalf("MarkAllNeedsReclassify: %v", err)
+	}
+	// Only a/classified should be affected (b has no category, c is excluded, d has force_category)
+	if count != 1 {
+		t.Errorf("MarkAllNeedsReclassify affected %d rows, want 1", count)
+	}
+
+	got, err := db.GetRepo("a/classified")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if got.Status != "needs_reclassify" {
+		t.Errorf("Status = %q, want %q", got.Status, "needs_reclassify")
+	}
+}
+
+func TestReposNeedingClassification(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		{FullName: "a/new", Owner: "a", Name: "new", Status: "pending", PrimaryCategory: ""},
+		{FullName: "b/reclassify", Owner: "b", Name: "reclassify", Status: "needs_reclassify", PrimaryCategory: "observability"},
+		{FullName: "c/review", Owner: "c", Name: "review", Status: "needs_review", PrimaryCategory: "networking"},
+		{FullName: "d/active", Owner: "d", Name: "active", Status: "active", PrimaryCategory: "kubernetes"},
+		{FullName: "e/excluded", Owner: "e", Name: "excluded", Status: "pending", PrimaryCategory: "", Excluded: 1},
+		{FullName: "f/forced", Owner: "f", Name: "forced", Status: "pending", PrimaryCategory: "", ForceCategory: "ai-agents"},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo(%s): %v", r.FullName, err)
+		}
+	}
+
+	got, err := db.ReposNeedingClassification()
+	if err != nil {
+		t.Fatalf("ReposNeedingClassification: %v", err)
+	}
+	// a/new (no category), b/reclassify, c/review — but not d/active, e/excluded, f/forced
+	if len(got) != 3 {
+		t.Errorf("ReposNeedingClassification returned %d repos, want 3", len(got))
+		for _, r := range got {
+			t.Logf("  got: %s (status=%s, category=%s)", r.FullName, r.Status, r.PrimaryCategory)
+		}
+	}
+}
+
 func TestSetTopicsFromSlice(t *testing.T) {
 	r := &RepoRecord{}
 	r.SetTopicsFromSlice([]string{"a", "b", "c"})

@@ -138,10 +138,73 @@ func (p *Pipeline) ClassifySingle(ctx context.Context, repo database.RepoRecord)
 	}, nil
 }
 
+// CheckReadmeHashes checks all classified repos for README content changes.
+// For each repo whose README hash has changed, it marks the repo as needs_reclassify
+// via UpdateReadmeHash so it will be picked up by the next classification run.
+// Returns the number of repos marked for reclassification.
+func (p *Pipeline) CheckReadmeHashes(ctx context.Context) (int, error) {
+	repos, err := p.db.ClassifiedRepos()
+	if err != nil {
+		return 0, fmt.Errorf("querying classified repos: %w", err)
+	}
+
+	if len(repos) == 0 {
+		return 0, nil
+	}
+
+	fmt.Fprintf(os.Stderr, "Checking README hashes for %d classified repos...\n", len(repos))
+	changed := 0
+
+	for _, repo := range repos {
+		select {
+		case <-ctx.Done():
+			return changed, ctx.Err()
+		default:
+		}
+
+		owner, name := splitFullName(repo.FullName)
+		readmeResp, err := p.gh.GetReadme(ctx, owner, name, "")
+		if err != nil {
+			log.Printf("[classification] WARNING: failed to fetch README for %s: %v", repo.FullName, err)
+			continue
+		}
+
+		var readmeContent string
+		if readmeResp.Found {
+			readmeContent = readmeResp.Content
+		}
+
+		newHash := HashReadme(readmeContent)
+		hashChanged, err := p.db.UpdateReadmeHash(repo.FullName, newHash)
+		if err != nil {
+			log.Printf("[classification] ERROR updating readme hash for %s: %v", repo.FullName, err)
+			continue
+		}
+
+		if hashChanged {
+			log.Printf("[classification] README changed for %s, marked needs_reclassify", repo.FullName)
+			changed++
+		}
+	}
+
+	if changed > 0 {
+		fmt.Fprintf(os.Stderr, "Detected %d README changes, repos marked for reclassification.\n", changed)
+	}
+	return changed, nil
+}
+
 // ClassifyAll queries the DB for repos needing classification and classifies each one.
+// It first checks all classified repos for README hash changes, marking changed ones
+// as needs_reclassify so they are included in this classification run.
 // Results are persisted to the database. Progress is written to stderr.
 func (p *Pipeline) ClassifyAll(ctx context.Context) (*Summary, error) {
 	start := time.Now()
+
+	// Pre-step: detect README changes in already-classified repos.
+	if _, err := p.CheckReadmeHashes(ctx); err != nil {
+		log.Printf("[classification] WARNING: readme hash check failed: %v", err)
+		// Continue with classification even if hash check fails.
+	}
 
 	repos, err := p.db.ReposNeedingClassification()
 	if err != nil {
@@ -174,7 +237,7 @@ func (p *Pipeline) ClassifyAll(ctx context.Context) (*Summary, error) {
 		}
 
 		if result.Skipped {
-			fmt.Fprintf(os.Stderr, " skipped (unchanged)\n")
+			fmt.Fprintf(os.Stderr, " skipped - no README change\n")
 			summary.Skipped++
 			continue
 		}

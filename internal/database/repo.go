@@ -334,6 +334,22 @@ func (d *DB) UpdateClassification(fullName, category string, confidence float64,
 	return nil
 }
 
+// ClassifiedRepos returns repos that have been classified (non-empty primary_category),
+// are not excluded, and have no force_category override. These are candidates for
+// README hash change detection.
+func (d *DB) ClassifiedRepos() ([]RepoRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.queryRepos(`
+		SELECT * FROM repos
+		WHERE excluded = 0
+		  AND force_category = ''
+		  AND primary_category != ''
+		  AND status = 'active'
+		ORDER BY full_name`)
+}
+
 // UpdateReadmeHash updates readme_hash and marks the repo as needs_reclassify if the hash changed.
 // Returns true if the hash changed.
 func (d *DB) UpdateReadmeHash(fullName, newHash string) (bool, error) {
