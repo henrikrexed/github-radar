@@ -291,6 +291,86 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 	return repos, rows.Err()
 }
 
+// ReposNeedingClassification returns repos that are not excluded and have no
+// force_category override, and either have no category yet, or have status
+// 'needs_reclassify' or 'needs_review' (low-confidence results eligible for re-run).
+func (d *DB) ReposNeedingClassification() ([]RepoRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.queryRepos(`
+		SELECT * FROM repos
+		WHERE excluded = 0
+		  AND force_category = ''
+		  AND (primary_category = '' OR status IN ('needs_reclassify', 'needs_review'))
+		ORDER BY full_name`)
+}
+
+// UpdateClassification stores LLM classification results for a repo.
+// If confidence is below minConfidence, the repo status is set to 'needs_review'
+// instead of being marked as fully classified.
+func (d *DB) UpdateClassification(fullName, category string, confidence float64, readmeHash, modelUsed string, minConfidence float64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	newStatus := "active"
+	if confidence < minConfidence {
+		newStatus = "needs_review"
+	}
+
+	_, err := d.db.Exec(`
+		UPDATE repos SET
+			primary_category = ?,
+			category_confidence = ?,
+			readme_hash = ?,
+			model_used = ?,
+			classified_at = datetime('now'),
+			status = ?
+		WHERE full_name = ?`,
+		category, confidence, readmeHash, modelUsed, newStatus, fullName)
+	if err != nil {
+		return fmt.Errorf("updating classification for %s: %w", fullName, err)
+	}
+	return nil
+}
+
+// UpdateReadmeHash updates readme_hash and marks the repo as needs_reclassify if the hash changed.
+// Returns true if the hash changed.
+func (d *DB) UpdateReadmeHash(fullName, newHash string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	result, err := d.db.Exec(`
+		UPDATE repos SET
+			readme_hash = ?,
+			status = 'needs_reclassify'
+		WHERE full_name = ? AND readme_hash != ? AND readme_hash != ''`,
+		newHash, fullName, newHash)
+	if err != nil {
+		return false, fmt.Errorf("updating readme hash for %s: %w", fullName, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+// MarkAllNeedsReclassify sets all classified repos to needs_reclassify (e.g. after model change).
+// Returns the number of repos affected.
+func (d *DB) MarkAllNeedsReclassify() (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	result, err := d.db.Exec(`
+		UPDATE repos SET status = 'needs_reclassify'
+		WHERE primary_category != '' AND excluded = 0 AND force_category = ''`)
+	if err != nil {
+		return 0, fmt.Errorf("marking repos needs_reclassify: %w", err)
+	}
+	return result.RowsAffected()
+}
+
 // Metadata operations
 
 // GetMetadata returns a metadata value by key.
