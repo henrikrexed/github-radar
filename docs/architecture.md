@@ -8,6 +8,10 @@ GitHub Radar follows a pipeline architecture:
 GitHub API → Collector → Scorer → Exporter → OTel Backend
                 ↕                     ↕
             State Store          OTLP HTTP
+
+GitHub API → Classifier → SQLite DB
+                 ↕
+             Ollama LLM
 ```
 
 ### Components
@@ -24,6 +28,8 @@ GitHub API → Collector → Scorer → Exporter → OTel Backend
 | **State Store** | `internal/state` | JSON persistence with atomic writes, thread-safe access |
 | **Metrics** | `internal/metrics` | OTel SDK setup, metric recording, OTLP export |
 | **Daemon** | `internal/daemon` | Scheduling, HTTP endpoints, signal handling, config reload |
+| **Classification** | `internal/classification` | LLM-based category classification via Ollama (prompt building, API client, pipeline) |
+| **Database** | `internal/database` | SQLite persistence for classification state, README hashes, reclassification tracking |
 | **Repository** | `internal/repository` | Repository management (add, remove, list, exclude) |
 
 ## Data Flow
@@ -125,8 +131,10 @@ The daemon runs as a single process with:
 github-radar/
 ├── cmd/github-radar/          # Entry point (main.go)
 ├── internal/                   # Private packages
+│   ├── classification/        # LLM classification (Ollama client, pipeline, prompts)
 │   ├── cli/                   # Command implementations
 │   │   ├── add.go
+│   │   ├── classify.go
 │   │   ├── collect.go
 │   │   ├── config_cmd.go
 │   │   ├── discover.go
@@ -138,6 +146,7 @@ github-radar/
 │   │   └── status.go
 │   ├── config/                # Configuration
 │   ├── daemon/                # Background daemon
+│   ├── database/              # SQLite persistence for classification
 │   ├── discovery/             # Topic-based discovery
 │   ├── github/                # GitHub API client
 │   ├── logging/               # Structured logging

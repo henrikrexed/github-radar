@@ -38,7 +38,8 @@ See [Installation](installation.md) for download and setup instructions.
 | **Growth Scoring** | Weighted composite score from star velocity, acceleration, contributor growth, PR and issue velocity |
 | **OpenTelemetry Export** | OTLP HTTP metrics to Dynatrace, Grafana, Prometheus, or any OTel-compatible backend |
 | **Background Daemon** | Scheduled scanning with HTTP health/status endpoints |
-| **CLI Management** | Add, remove, list, discover, and exclude repositories |
+| **LLM Classification** | Automatic CNCF category classification via Ollama with configurable categories, confidence thresholds, and README-based reclassification |
+| **CLI Management** | Add, remove, list, discover, classify, and exclude repositories |
 | **Cross-Platform** | Native binaries for Linux (amd64/arm64), macOS (Intel/Apple Silicon), and Windows |
 | **Docker Support** | Multi-stage Docker build with health checks, runs as non-root user |
 

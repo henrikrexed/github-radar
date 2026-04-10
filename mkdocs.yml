@@ -29,6 +29,7 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Configuration: configuration.md
+  - Classification Guide: classification.md
   - CLI Reference: cli-reference.md
   - Daemon Guide: daemon-guide.md
   - OpenTelemetry Integration: otel-integration.md

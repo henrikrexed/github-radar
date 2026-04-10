@@ -52,6 +52,47 @@ scoring:
     pr_velocity: 1.0               # Weight for PRs merged per day (default: 1.0)
     issue_velocity: 0.5            # Weight for new issues per day (default: 0.5)
 
+# LLM-based category classification (requires Ollama)
+classification:
+  ollama_endpoint: "http://localhost:11434"  # Ollama API endpoint URL
+  model: "qwen3:1.7b"                       # Ollama model name for classification
+  timeout_ms: 30000                          # Request timeout in milliseconds (default: 30000)
+  max_readme_chars: 2000                     # Max README characters sent to LLM (default: 2000)
+  min_confidence: 0.6                        # Confidence threshold (0.0–1.0). Below → needs_review
+  categories:                                # CNCF/cloud-native categories (19 + "other")
+    - ai-agents
+    - llm-tooling
+    - kubernetes
+    - observability
+    - cloud-native-security
+    - networking
+    - service-mesh
+    - platform-engineering
+    - gitops
+    - mlops
+    - vector-database
+    - rag
+    - wasm
+    - developer-tools
+    - infrastructure
+    - data-engineering
+    - testing
+    - container-runtime
+    - other
+  system_prompt: |                           # System prompt template ({{.Categories}} is replaced)
+    You are a GitHub repository classifier for CNCF and cloud-native projects.
+    Classify into exactly ONE category from: {{.Categories}}
+    If unclear, use "other".
+    Respond ONLY with JSON: {"category": "<name>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}
+  user_prompt: |                             # User prompt template (see template variables below)
+    Repository: {{.RepoName}}
+    Description: {{.Description}}
+    Language: {{.Language}}
+    Topics: {{.Topics}}
+    Stars: {{.Stars}} (trend: {{.StarTrend}})
+    README excerpt:
+    {{.Readme}}
+
 # Repositories to exclude from scanning
 exclusions:
   - example-org/spam-repo          # Exact match: owner/repo
@@ -94,6 +135,7 @@ otel:
 | `GITHUB_RADAR_CONFIG` | Default config file path |
 | `GITHUB_RADAR_STATE` | Default state file path |
 | `OTEL_ENDPOINT` | OTLP HTTP endpoint URL |
+| `OLLAMA_ENDPOINT` | Ollama API endpoint for classification |
 
 ## Validation
 
@@ -139,3 +181,43 @@ Scores are then normalized to a 0-100 scale across all tracked repositories.
 - Increase `contributor_growth` to prioritize repos attracting **new developers**
 - Increase `pr_velocity` to prioritize repos with **active development**
 - Set `issue_velocity` lower since high issues can indicate problems, not just popularity
+
+## Classification Configuration
+
+The `classification` section configures LLM-based category classification using [Ollama](https://ollama.com). See the [Classification Guide](classification.md) for full usage details.
+
+### Prompt Template Variables
+
+The `user_prompt` template supports Go template syntax with these variables:
+
+| Variable | Description |
+|----------|-------------|
+| `{{.RepoName}}` | Full repository name (`owner/repo`) |
+| `{{.Description}}` | Repository description from GitHub |
+| `{{.Language}}` | Primary programming language |
+| `{{.Topics}}` | Comma-separated GitHub topics |
+| `{{.Stars}}` | Current star count |
+| `{{.StarTrend}}` | Star growth trend (e.g., `rising`, `stable`, `unknown`) |
+| `{{.Readme}}` | Truncated README content (up to `max_readme_chars`) |
+
+The `system_prompt` template supports:
+
+| Variable | Description |
+|----------|-------------|
+| `{{.Categories}}` | Comma-separated list of configured categories |
+
+### Confidence Threshold
+
+Repositories classified with a confidence below `min_confidence` are marked as `needs_review` instead of being auto-assigned a category. Adjust this value based on your tolerance for misclassification:
+
+- **0.8+** — Strict: only high-confidence classifications are accepted
+- **0.6** — Balanced (default): reasonable accuracy with fewer manual reviews
+- **0.4** — Lenient: accepts most classifications, review only very uncertain ones
+
+### Reclassification Triggers
+
+Classification is automatically re-triggered when:
+
+- A repository's README content changes (detected via SHA-256 hash comparison)
+- The classification model is changed via `github-radar classify model <name>`
+- A repository has never been classified

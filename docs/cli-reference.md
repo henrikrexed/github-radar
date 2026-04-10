@@ -196,6 +196,104 @@ github-radar status --format json
 
 ---
 
+### classify
+
+Classify tracked repositories into CNCF categories using an Ollama LLM. Requires a running Ollama instance with the configured model pulled.
+
+```bash
+github-radar classify [flags]
+```
+
+Runs batch classification on all repositories that need classification (unclassified, or README changed since last classification).
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--dry-run` | Show repos that would be classified without calling the LLM | `false` |
+
+**Examples:**
+
+```bash
+# Classify all pending repositories
+github-radar classify --config config.yaml
+
+# Preview which repos would be classified
+github-radar classify --config config.yaml --dry-run
+```
+
+**Output:**
+
+```
+--- Classification Summary ---
+Total:        12
+Classified:   10
+Needs review: 1
+Skipped:      0
+Failed:       1
+Duration:     8.234s
+```
+
+---
+
+### classify test
+
+Test classification on a single repository with verbose output. Does **not** save results to the database — useful for debugging prompts and verifying Ollama connectivity.
+
+```bash
+github-radar classify test <owner/repo> [flags]
+```
+
+**Examples:**
+
+```bash
+# Test classification for a specific repo
+github-radar classify test kubernetes/kubernetes --config config.yaml
+
+# Test with a different config (e.g., different model)
+github-radar classify test grafana/grafana --config custom-config.yaml
+```
+
+**Output includes:**
+
+- Model and endpoint info
+- README fetch status and SHA-256 hash
+- Full system and user prompts sent to the LLM
+- Classification result: category, confidence, reasoning
+- LLM response time and total execution time
+- Warning if confidence is below the configured threshold
+
+---
+
+### classify model
+
+Show or change the classification model. When changing models, all previously classified repositories are queued for reclassification.
+
+```bash
+github-radar classify model [<name>] [flags]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `<name>` | New model name (optional). Omit to show the current model. |
+
+**Examples:**
+
+```bash
+# Show current model
+github-radar classify model --config config.yaml
+
+# Switch to a different model (triggers reclassification)
+github-radar classify model llama3:8b --config config.yaml
+```
+
+**Output (model change):**
+
+```
+Classification model changed: qwen3:1.7b -> llama3:8b
+Queued 42 repos for reclassification
+```
+
+---
+
 ### config
 
 Configuration management commands.
