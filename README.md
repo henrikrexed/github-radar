@@ -14,13 +14,15 @@ GitHub Radar scans GitHub for repositories showing unusual growth patterns (star
 - **Growth Scoring** — Weighted composite score from star velocity, star acceleration, contributor growth, PR velocity, and issue velocity
 - **OpenTelemetry Export** — OTLP HTTP metrics to any compatible backend (Dynatrace, Grafana, Prometheus)
 - **Background Daemon** — Scheduled scanning with health/status HTTP endpoints
-- **CLI Management** — Add, remove, list, discover, and exclude repositories
+- **LLM Classification** — Automatic CNCF category classification via Ollama with 19 categories, confidence thresholds, and README-based reclassification
+- **CLI Management** — Add, remove, list, discover, classify, and exclude repositories
 - **Cross-Platform** — Native binaries for Linux, macOS, and Windows
 
 ## Prerequisites
 
 - **GitHub Personal Access Token** (see [Token Setup](#github-token-setup) below)
 - **OTel Collector or OTLP endpoint** for metrics export (optional for dry-run mode)
+- **[Ollama](https://ollama.com)** for LLM-based classification (optional — only needed for `classify` commands)
 
 ## Installation
 
@@ -207,6 +209,40 @@ github-radar status --addr http://localhost:9090
 github-radar status --format json
 ```
 
+### `github-radar classify`
+
+Classify tracked repositories into CNCF categories using an Ollama LLM.
+
+```bash
+# Classify all pending repositories
+github-radar classify --config config.yaml
+
+# Preview which repos would be classified (no LLM calls)
+github-radar classify --config config.yaml --dry-run
+```
+
+### `github-radar classify test`
+
+Test classification on a single repo with verbose output (does not save results).
+
+```bash
+github-radar classify test kubernetes/kubernetes --config config.yaml
+```
+
+Prints the full prompt, LLM response, confidence, reasoning, and timing. Useful for debugging prompts and verifying Ollama connectivity.
+
+### `github-radar classify model`
+
+Show or change the classification model.
+
+```bash
+# Show current model
+github-radar classify model --config config.yaml
+
+# Switch model (triggers reclassification of all repos)
+github-radar classify model llama3:8b --config config.yaml
+```
+
 ### `github-radar config`
 
 Validate or display configuration.
@@ -271,6 +307,34 @@ scoring:
     contributor_growth: 1.5        # New contributors per day (default: 1.5)
     pr_velocity: 1.0               # PRs merged per day (default: 1.0)
     issue_velocity: 0.5            # New issues per day (default: 0.5)
+
+# LLM-based category classification (requires Ollama)
+classification:
+  ollama_endpoint: "http://localhost:11434"  # Ollama API endpoint
+  model: "qwen3:1.7b"                       # Ollama model name
+  timeout_ms: 30000                          # Request timeout (default: 30000)
+  max_readme_chars: 2000                     # Max README chars for prompt (default: 2000)
+  min_confidence: 0.6                        # Below this → needs_review (default: 0.6)
+  categories:                                # Categories the LLM can assign
+    - ai-agents
+    - llm-tooling
+    - kubernetes
+    - observability
+    - cloud-native-security
+    - networking
+    - service-mesh
+    - platform-engineering
+    - gitops
+    - mlops
+    - vector-database
+    - rag
+    - wasm
+    - developer-tools
+    - infrastructure
+    - data-engineering
+    - testing
+    - container-runtime
+    - other                                  # Catch-all for uncategorized repos
 
 # Repositories to exclude from scanning
 exclusions:
@@ -418,9 +482,11 @@ make help           # Show all available targets
 github-radar/
 ├── cmd/github-radar/     # CLI entry point
 ├── internal/
+│   ├── classification/   # LLM classification (Ollama client, pipeline, prompts)
 │   ├── cli/              # Command implementations
 │   ├── config/           # Configuration loading & validation
 │   ├── daemon/           # Background daemon
+│   ├── database/         # SQLite persistence for classification state
 │   ├── discovery/        # Topic-based repository discovery
 │   ├── github/           # GitHub API client & scanner
 │   ├── logging/          # Structured logging

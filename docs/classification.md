@@ -1,6 +1,6 @@
 # Classification Guide
 
-GitHub Radar can automatically classify tracked repositories into CNCF and cloud-native categories using a local LLM via [Ollama](https://ollama.com). This helps organize large numbers of discovered repositories by technology domain.
+GitHub Radar can automatically classify tracked repositories into technology categories using a local LLM via [Ollama](https://ollama.com). This helps organize large numbers of discovered repositories by technology domain. The taxonomy covers all of tech — from cloud-native and AI to web frameworks, mobile, game dev, and more.
 
 ## Overview
 
@@ -45,8 +45,18 @@ classification:
   max_readme_chars: 2000
   min_confidence: 0.6
   categories:
+    # AI & ML
     - ai-agents
     - llm-tooling
+    - ai-coding-assistants
+    - mcp-ecosystem
+    - ai-infrastructure
+    - computer-vision
+    - voice-and-audio-ai
+    - mlops
+    - vector-database
+    - rag
+    # Cloud-Native & Infrastructure
     - kubernetes
     - observability
     - cloud-native-security
@@ -54,15 +64,43 @@ classification:
     - service-mesh
     - platform-engineering
     - gitops
-    - mlops
-    - vector-database
-    - rag
-    - wasm
-    - developer-tools
     - infrastructure
-    - data-engineering
-    - testing
     - container-runtime
+    - wasm
+    # Web & Frontend
+    - web-frameworks
+    - frontend-ui
+    - css-and-styling
+    # Mobile & Desktop
+    - mobile-development
+    - desktop-apps
+    # Systems & Languages
+    - rust-ecosystem
+    - programming-languages
+    - embedded-iot
+    # Security
+    - cybersecurity
+    - privacy-tools
+    # Data & Databases
+    - databases
+    - data-engineering
+    - data-science
+    # Productivity & Self-Hosted
+    - self-hosted
+    - cli-tools
+    - productivity
+    - low-code-automation
+    # Developer Tools & Testing
+    - developer-tools
+    - testing
+    # Game Dev & Creative
+    - game-development
+    - media-tools
+    # Crypto & Web3
+    - blockchain-web3
+    # Robotics
+    - robotics
+    # Catch-all
     - other
 ```
 
@@ -70,12 +108,27 @@ See [Configuration Reference](configuration.md#classification-configuration) for
 
 ## Categories
 
-GitHub Radar ships with 19 CNCF-aligned categories plus an `other` catch-all:
+GitHub Radar ships with 43 categories covering all technology domains, plus an `other` catch-all:
+
+**AI & ML**
 
 | Category | Description |
 |----------|-------------|
 | `ai-agents` | Autonomous AI agent frameworks and tools |
 | `llm-tooling` | LLM inference, fine-tuning, and tooling |
+| `ai-coding-assistants` | Vibe-coding, coding agents, IDE copilots |
+| `mcp-ecosystem` | Model Context Protocol servers and clients |
+| `ai-infrastructure` | Training frameworks, inference engines, model serving |
+| `computer-vision` | Object detection, image generation, video AI |
+| `voice-and-audio-ai` | TTS, STT, music generation, audio processing AI |
+| `mlops` | ML pipelines, model serving, experiment tracking |
+| `vector-database` | Vector stores and embedding databases |
+| `rag` | Retrieval-augmented generation frameworks |
+
+**Cloud-Native & Infrastructure**
+
+| Category | Description |
+|----------|-------------|
 | `kubernetes` | Kubernetes core, operators, and extensions |
 | `observability` | Monitoring, tracing, logging, and alerting |
 | `cloud-native-security` | Container security, policy engines, supply chain |
@@ -83,15 +136,77 @@ GitHub Radar ships with 19 CNCF-aligned categories plus an `other` catch-all:
 | `service-mesh` | Service mesh implementations and control planes |
 | `platform-engineering` | Internal developer platforms, IDPs, and portals |
 | `gitops` | GitOps controllers and CD pipelines |
-| `mlops` | ML pipelines, model serving, experiment tracking |
-| `vector-database` | Vector stores and embedding databases |
-| `rag` | Retrieval-augmented generation frameworks |
-| `wasm` | WebAssembly runtimes and toolchains |
-| `developer-tools` | CLI tools, SDKs, linters, and dev productivity |
 | `infrastructure` | IaC, provisioning, cloud management |
-| `data-engineering` | Data pipelines, streaming, and processing |
-| `testing` | Testing frameworks, chaos engineering, load testing |
 | `container-runtime` | Container runtimes and image builders |
+| `wasm` | WebAssembly runtimes and toolchains |
+
+**Web & Frontend**
+
+| Category | Description |
+|----------|-------------|
+| `web-frameworks` | Next.js, Svelte, Astro, Remix, Nuxt, and similar |
+| `frontend-ui` | Component libraries, design systems (shadcn/ui, Radix) |
+| `css-and-styling` | Tailwind, CSS-in-JS, animation libraries |
+
+**Mobile & Desktop**
+
+| Category | Description |
+|----------|-------------|
+| `mobile-development` | Flutter, React Native, Kotlin Multiplatform, Swift |
+| `desktop-apps` | Tauri, Electron, cross-platform desktop apps |
+
+**Systems & Languages**
+
+| Category | Description |
+|----------|-------------|
+| `rust-ecosystem` | Rust libraries, frameworks, and tools |
+| `programming-languages` | New languages, compilers, interpreters (Zig, Mojo, Gleam) |
+| `embedded-iot` | ESP32, Arduino, Raspberry Pi, firmware, RTOS |
+
+**Security**
+
+| Category | Description |
+|----------|-------------|
+| `cybersecurity` | Pentesting tools, vulnerability scanners, CTF tools |
+| `privacy-tools` | VPNs, proxies, encryption tools, ad blockers |
+
+**Data & Databases**
+
+| Category | Description |
+|----------|-------------|
+| `databases` | Database engines, ORMs, and database tools |
+| `data-engineering` | Data pipelines, streaming, and processing |
+| `data-science` | Jupyter, pandas-alternatives, visualization, analysis |
+
+**Productivity & Self-Hosted**
+
+| Category | Description |
+|----------|-------------|
+| `self-hosted` | Self-hosted alternatives (n8n, Immich, HomeAssistant) |
+| `cli-tools` | Terminal utilities, TUI frameworks |
+| `productivity` | Note-taking, knowledge management, PKM tools |
+| `low-code-automation` | Workflow engines, no-code builders, automation platforms |
+
+**Developer Tools & Testing**
+
+| Category | Description |
+|----------|-------------|
+| `developer-tools` | SDKs, linters, and dev productivity tools |
+| `testing` | Testing frameworks, chaos engineering, load testing |
+
+**Game Dev & Creative**
+
+| Category | Description |
+|----------|-------------|
+| `game-development` | Godot, Bevy, game engines, 3D/AR/VR |
+| `media-tools` | Video editors, ffmpeg wrappers, streaming, image processing |
+
+**Other Domains**
+
+| Category | Description |
+|----------|-------------|
+| `blockchain-web3` | Ethereum, Solana, DeFi, smart contracts |
+| `robotics` | ROS, simulation, computer vision for robots |
 | `other` | Catch-all for repos that don't fit above categories |
 
 You can customize this list in your config file. The LLM is instructed to pick exactly one category from your configured list.

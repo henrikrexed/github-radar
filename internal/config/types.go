@@ -165,8 +165,18 @@ func DefaultConfig() *Config {
 			MaxReadmeChars: 2000,
 			MinConfidence:  0.6,
 			Categories: []string{
+				// AI & ML
 				"ai-agents",
 				"llm-tooling",
+				"ai-coding-assistants",
+				"mcp-ecosystem",
+				"ai-infrastructure",
+				"computer-vision",
+				"voice-and-audio-ai",
+				"mlops",
+				"vector-database",
+				"rag",
+				// Cloud-Native & Infrastructure
 				"kubernetes",
 				"observability",
 				"cloud-native-security",
@@ -174,20 +184,48 @@ func DefaultConfig() *Config {
 				"service-mesh",
 				"platform-engineering",
 				"gitops",
-				"mlops",
-				"vector-database",
-				"rag",
-				"wasm",
-				"developer-tools",
 				"infrastructure",
-				"data-engineering",
-				"testing",
 				"container-runtime",
+				"wasm",
+				// Web & Frontend
+				"web-frameworks",
+				"frontend-ui",
+				"css-and-styling",
+				// Mobile & Desktop
+				"mobile-development",
+				"desktop-apps",
+				// Systems & Languages
+				"rust-ecosystem",
+				"programming-languages",
+				"embedded-iot",
+				// Security
+				"cybersecurity",
+				"privacy-tools",
+				// Data & Databases
+				"databases",
+				"data-engineering",
+				"data-science",
+				// Productivity & Self-Hosted
+				"self-hosted",
+				"cli-tools",
+				"productivity",
+				"low-code-automation",
+				// Developer Tools & Testing
+				"developer-tools",
+				"testing",
+				// Game Dev & Creative
+				"game-development",
+				"media-tools",
+				// Crypto & Web3
+				"blockchain-web3",
+				// Robotics
+				"robotics",
+				// Catch-all
 				"other",
 			},
-			SystemPrompt: `You are a GitHub repository classifier for CNCF and cloud-native projects.
+			SystemPrompt: `You are a GitHub repository classifier for trending open-source projects across all technology domains.
 Classify into exactly ONE category from: {{.Categories}}
-If unclear, use "other".
+Pick the most specific category that fits. Use "other" only if no category applies.
 Respond ONLY with JSON: {"category": "<name>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}`,
 			UserPrompt: `Repository: {{.RepoName}}
 Description: {{.Description}}
