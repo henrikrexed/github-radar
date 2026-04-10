@@ -13,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hrexed/github-radar/internal/classification"
 	"github.com/hrexed/github-radar/internal/config"
+	"github.com/hrexed/github-radar/internal/database"
 	"github.com/hrexed/github-radar/internal/discovery"
 	"github.com/hrexed/github-radar/internal/github"
 	"github.com/hrexed/github-radar/internal/logging"
@@ -66,6 +68,7 @@ type Daemon struct {
 	client     *github.Client
 	scanner    *github.Scanner
 	discoverer *discovery.Discoverer
+	classifier *classification.Pipeline
 	exporter   *metrics.Exporter
 	store      *state.Store
 	server     *http.Server
@@ -153,6 +156,27 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		}
 	}
 
+	// Create classification pipeline if configured
+	var classifyPipeline *classification.Pipeline
+	if cfg.Classification.OllamaEndpoint != "" && cfg.Classification.Model != "" {
+		classifyDB, err := database.Open("")
+		if err != nil {
+			logging.Warn("could not open database for classification, classification disabled", "error", err)
+		} else {
+			clsCfg := cfg.Classification
+			ollama := classification.NewOllamaClient(
+				clsCfg.OllamaEndpoint,
+				clsCfg.Model,
+				clsCfg.TimeoutMs,
+				clsCfg.Categories,
+			)
+			classifyPipeline = classification.NewPipeline(classifyDB, client, ollama, clsCfg)
+			logging.Info("classification enabled",
+				"model", clsCfg.Model,
+				"endpoint", clsCfg.OllamaEndpoint)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	d := &Daemon{
@@ -161,6 +185,7 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		client:     client,
 		scanner:    scanner,
 		discoverer: disc,
+		classifier: classifyPipeline,
 		exporter:   exp,
 		store:      store,
 		status:     StatusIdle,
@@ -361,6 +386,11 @@ func (d *Daemon) runScan() {
 		d.runDiscovery()
 	}
 
+	// Run classification if enabled
+	if d.classifier != nil {
+		d.runClassification()
+	}
+
 	// Export metrics for all repos (including auto-tracked from discovery)
 	if d.exporter != nil {
 		d.exportMetrics()
@@ -399,6 +429,27 @@ func (d *Daemon) runDiscovery() {
 		logging.Info("discovery auto-tracked repos",
 			"new_found", totalNew,
 			"auto_tracked", totalTracked)
+	}
+}
+
+// runClassification runs LLM-based classification on pending repos.
+func (d *Daemon) runClassification() {
+	logging.Info("starting classification scan")
+
+	summary, err := d.classifier.ClassifyAll(d.ctx)
+	if err != nil && err != context.Canceled {
+		logging.Error("classification failed", "error", err)
+		return
+	}
+
+	if summary != nil {
+		logging.Info("classification complete",
+			"total", summary.Total,
+			"classified", summary.Classified,
+			"needs_review", summary.NeedsReview,
+			"skipped", summary.Skipped,
+			"failed", summary.Failed,
+			"duration", summary.Duration)
 	}
 }
 
