@@ -1,6 +1,6 @@
 module github.com/hrexed/github-radar
 
-go 1.25.0
+go 1.25.9
 
 require (
 	go.opentelemetry.io/otel v1.40.0

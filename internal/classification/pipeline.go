@@ -27,12 +27,12 @@ type Result struct {
 
 // Summary holds batch classification results.
 type Summary struct {
-	Total        int
-	Classified   int
-	NeedsReview  int
-	Skipped      int
-	Failed       int
-	Duration     time.Duration
+	Total       int
+	Classified  int
+	NeedsReview int
+	Skipped     int
+	Failed      int
+	Duration    time.Duration
 }
 
 // Pipeline orchestrates LLM-based repository classification.

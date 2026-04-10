@@ -9,37 +9,37 @@ import (
 
 // RepoRecord represents a repository row in the database.
 type RepoRecord struct {
-	ID                   int64
-	FullName             string
-	Owner                string
-	Name                 string
-	Language             string
-	Description          string
-	Stars                int
-	StarsPrev            int
-	Forks                int
-	OpenIssues           int
-	OpenPRs              int
-	Contributors         int
-	ContributorsPrev     int
-	GrowthScore          float64
+	ID                    int64
+	FullName              string
+	Owner                 string
+	Name                  string
+	Language              string
+	Description           string
+	Stars                 int
+	StarsPrev             int
+	Forks                 int
+	OpenIssues            int
+	OpenPRs               int
+	Contributors          int
+	ContributorsPrev      int
+	GrowthScore           float64
 	NormalizedGrowthScore float64
-	StarVelocity         float64
-	StarAcceleration     float64
-	PRVelocity           float64
-	IssueVelocity        float64
-	ContributorGrowth    float64
-	MergedPRs7d          int
-	NewIssues7d          int
-	LatestRelease        string
-	LatestReleaseDate    string
-	CreatedAt            string
-	FirstSeenAt          string
-	LastCollectedAt      string
-	Topics               string // comma-separated
-	Status               string
-	ETag                 string
-	LastModified         string
+	StarVelocity          float64
+	StarAcceleration      float64
+	PRVelocity            float64
+	IssueVelocity         float64
+	ContributorGrowth     float64
+	MergedPRs7d           int
+	NewIssues7d           int
+	LatestRelease         string
+	LatestReleaseDate     string
+	CreatedAt             string
+	FirstSeenAt           string
+	LastCollectedAt       string
+	Topics                string // comma-separated
+	Status                string
+	ETag                  string
+	LastModified          string
 
 	// Classification fields
 	PrimaryCategory    string

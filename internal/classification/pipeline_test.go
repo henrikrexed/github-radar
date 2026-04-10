@@ -188,13 +188,13 @@ func TestClassifySingle_SkipsUnchangedReadme(t *testing.T) {
 	)
 
 	repo := database.RepoRecord{
-		FullName:        "test/repo",
-		Owner:           "test",
-		Name:            "repo",
-		ReadmeHash:      readmeHash,
-		PrimaryCategory: "observability",
+		FullName:           "test/repo",
+		Owner:              "test",
+		Name:               "repo",
+		ReadmeHash:         readmeHash,
+		PrimaryCategory:    "observability",
 		CategoryConfidence: 0.85,
-		ModelUsed:       "old-model",
+		ModelUsed:          "old-model",
 	}
 	if err := deps.db.UpsertRepo(&repo); err != nil {
 		t.Fatalf("UpsertRepo: %v", err)

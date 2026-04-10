@@ -88,13 +88,13 @@ type WeightConfig struct {
 // ClassificationConfig contains LLM-based repository classification settings.
 type ClassificationConfig struct {
 	OllamaEndpoint string   `yaml:"ollama_endpoint"`  // Ollama API endpoint
-	Model          string   `yaml:"model"`             // LLM model name
-	TimeoutMs      int      `yaml:"timeout_ms"`        // Request timeout in milliseconds
-	MaxReadmeChars int      `yaml:"max_readme_chars"`  // Max README characters to send to LLM
-	MinConfidence  float64  `yaml:"min_confidence"`    // Minimum confidence threshold
-	Categories     []string `yaml:"categories"`        // Allowed classification categories
-	SystemPrompt   string   `yaml:"system_prompt"`     // Go template for system prompt
-	UserPrompt     string   `yaml:"user_prompt"`       // Go template for user prompt
+	Model          string   `yaml:"model"`            // LLM model name
+	TimeoutMs      int      `yaml:"timeout_ms"`       // Request timeout in milliseconds
+	MaxReadmeChars int      `yaml:"max_readme_chars"` // Max README characters to send to LLM
+	MinConfidence  float64  `yaml:"min_confidence"`   // Minimum confidence threshold
+	Categories     []string `yaml:"categories"`       // Allowed classification categories
+	SystemPrompt   string   `yaml:"system_prompt"`    // Go template for system prompt
+	UserPrompt     string   `yaml:"user_prompt"`      // Go template for user prompt
 }
 
 // ConfigError wraps config-related errors with context and hints.
