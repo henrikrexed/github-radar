@@ -11,6 +11,7 @@ import (
 
 	"github.com/hrexed/github-radar/internal/logging"
 	"github.com/hrexed/github-radar/internal/repository"
+	"github.com/hrexed/github-radar/internal/state"
 )
 
 // RepoCmd handles repository management commands.
@@ -181,10 +182,28 @@ func (r *RepoCmd) List(args []string) int {
 
 	// Convert config repos to TrackedRepoConfig
 	configRepos := make([]repository.TrackedRepoConfig, len(r.cli.Config.Repositories))
+	seen := make(map[string]bool, len(r.cli.Config.Repositories))
 	for i, tr := range r.cli.Config.Repositories {
 		configRepos[i] = repository.TrackedRepoConfig{
 			Repo:       tr.Repo,
 			Categories: tr.Categories,
+		}
+		seen[tr.Repo] = true
+	}
+
+	// Also include auto-discovered repos from state store
+	store := state.NewStore(state.DefaultStatePath)
+	if err := store.Load(); err != nil {
+		logging.Debug("could not load state file", "error", err)
+	} else {
+		for fullName := range store.AllRepoStates() {
+			if !seen[fullName] {
+				configRepos = append(configRepos, repository.TrackedRepoConfig{
+					Repo:       fullName,
+					Categories: []string{"discovered"},
+				})
+				seen[fullName] = true
+			}
 		}
 	}
 

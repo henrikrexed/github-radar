@@ -231,7 +231,7 @@ func (e *Exporter) createInstruments() error {
 
 	e.starAccelerationGauge, err = e.meter.Float64Gauge("github.repo.star_acceleration",
 		metric.WithDescription("Change in star velocity"),
-		metric.WithUnit("{stars}/d²"),
+		metric.WithUnit("{stars_per_day_squared}"),
 	)
 	if err != nil {
 		return err

@@ -1,22 +1,49 @@
 // Package config provides configuration management for github-radar.
 package config
 
-import "fmt"
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
 
 // Config represents the complete github-radar configuration.
 type Config struct {
-	GitHub       GithubConfig    `yaml:"github"`
-	Otel         OtelConfig      `yaml:"otel"`
-	Discovery    DiscoveryConfig `yaml:"discovery"`
-	Scoring      ScoringConfig   `yaml:"scoring"`
-	Exclusions   []string        `yaml:"exclusions"`
-	Repositories []TrackedRepo   `yaml:"repositories"`
+	GitHub         GithubConfig         `yaml:"github"`
+	Otel           OtelConfig           `yaml:"otel"`
+	Discovery      DiscoveryConfig      `yaml:"discovery"`
+	Scoring        ScoringConfig        `yaml:"scoring"`
+	Classification ClassificationConfig `yaml:"classification"`
+	Exclusions     []string             `yaml:"exclusions"`
+	Repositories   []TrackedRepo        `yaml:"repositories"`
 }
 
 // TrackedRepo represents a repository being tracked with its categories.
+// Supports YAML unmarshalling from both a simple string ("owner/repo")
+// and a full object ({repo: "owner/repo", categories: [...]}).
 type TrackedRepo struct {
 	Repo       string   `yaml:"repo"`
 	Categories []string `yaml:"categories"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler so that TrackedRepo can be
+// parsed from either a bare string or a mapping node.
+func (t *TrackedRepo) UnmarshalYAML(value *yaml.Node) error {
+	// Simple string: "owner/repo"
+	if value.Kind == yaml.ScalarNode {
+		t.Repo = value.Value
+		t.Categories = nil
+		return nil
+	}
+
+	// Full object: {repo: ..., categories: [...]}
+	type plain TrackedRepo // avoid recursion
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	*t = TrackedRepo(p)
+	return nil
 }
 
 // GithubConfig contains GitHub API settings.
@@ -56,6 +83,18 @@ type WeightConfig struct {
 	ContributorGrowth float64 `yaml:"contributor_growth"`
 	PRVelocity        float64 `yaml:"pr_velocity"`
 	IssueVelocity     float64 `yaml:"issue_velocity"`
+}
+
+// ClassificationConfig contains LLM-based repository classification settings.
+type ClassificationConfig struct {
+	OllamaEndpoint string   `yaml:"ollama_endpoint"`  // Ollama API endpoint
+	Model          string   `yaml:"model"`             // LLM model name
+	TimeoutMs      int      `yaml:"timeout_ms"`        // Request timeout in milliseconds
+	MaxReadmeChars int      `yaml:"max_readme_chars"`  // Max README characters to send to LLM
+	MinConfidence  float64  `yaml:"min_confidence"`    // Minimum confidence threshold
+	Categories     []string `yaml:"categories"`        // Allowed classification categories
+	SystemPrompt   string   `yaml:"system_prompt"`     // Go template for system prompt
+	UserPrompt     string   `yaml:"user_prompt"`       // Go template for user prompt
 }
 
 // ConfigError wraps config-related errors with context and hints.
@@ -118,6 +157,45 @@ func DefaultConfig() *Config {
 				PRVelocity:        1.0,
 				IssueVelocity:     0.5,
 			},
+		},
+		Classification: ClassificationConfig{
+			OllamaEndpoint: "http://10.0.0.185:11434",
+			Model:          "qwen3:1.7b",
+			TimeoutMs:      30000,
+			MaxReadmeChars: 2000,
+			MinConfidence:  0.6,
+			Categories: []string{
+				"ai-agents",
+				"llm-tooling",
+				"kubernetes",
+				"observability",
+				"cloud-native-security",
+				"networking",
+				"service-mesh",
+				"platform-engineering",
+				"gitops",
+				"mlops",
+				"vector-database",
+				"rag",
+				"wasm",
+				"developer-tools",
+				"infrastructure",
+				"data-engineering",
+				"testing",
+				"container-runtime",
+				"other",
+			},
+			SystemPrompt: `You are a GitHub repository classifier for CNCF and cloud-native projects.
+Classify into exactly ONE category from: {{.Categories}}
+If unclear, use "other".
+Respond ONLY with JSON: {"category": "<name>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}`,
+			UserPrompt: `Repository: {{.RepoName}}
+Description: {{.Description}}
+Language: {{.Language}}
+Topics: {{.Topics}}
+Stars: {{.Stars}} (trend: {{.StarTrend}})
+README excerpt:
+{{.Readme}}`,
 		},
 		Exclusions:   []string{},
 		Repositories: []TrackedRepo{},

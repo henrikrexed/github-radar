@@ -67,6 +67,30 @@ func (c *Config) Validate() error {
 		issues = append(issues, fmt.Sprintf("discovery.auto_track_threshold: must be >= 0, got %.1f", c.Discovery.AutoTrackThreshold))
 	}
 
+	// Classification settings
+	if c.Classification.OllamaEndpoint != "" {
+		parsedURL, err := url.Parse(c.Classification.OllamaEndpoint)
+		if err != nil {
+			issues = append(issues, fmt.Sprintf("classification.ollama_endpoint: invalid URL format: %v", err))
+		} else if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+			issues = append(issues, fmt.Sprintf("classification.ollama_endpoint: must use http:// or https:// scheme, got %q", parsedURL.Scheme))
+		} else if parsedURL.Host == "" {
+			issues = append(issues, "classification.ollama_endpoint: missing host")
+		}
+	}
+
+	if c.Classification.TimeoutMs < 0 {
+		issues = append(issues, fmt.Sprintf("classification.timeout_ms: must be >= 0, got %d", c.Classification.TimeoutMs))
+	}
+
+	if c.Classification.MaxReadmeChars < 0 {
+		issues = append(issues, fmt.Sprintf("classification.max_readme_chars: must be >= 0, got %d", c.Classification.MaxReadmeChars))
+	}
+
+	if c.Classification.MinConfidence < 0 || c.Classification.MinConfidence > 1 {
+		issues = append(issues, fmt.Sprintf("classification.min_confidence: must be between 0 and 1, got %.2f", c.Classification.MinConfidence))
+	}
+
 	// Scoring weights must be non-negative
 	if c.Scoring.Weights.StarVelocity < 0 {
 		issues = append(issues, fmt.Sprintf("scoring.weights.star_velocity: must be >= 0, got %f", c.Scoring.Weights.StarVelocity))

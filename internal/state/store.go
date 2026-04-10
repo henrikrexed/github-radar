@@ -11,7 +11,19 @@ import (
 )
 
 // DefaultStatePath is the default path for the state file.
-const DefaultStatePath = "data/state.json"
+// Uses XDG data directory convention.
+var DefaultStatePath = defaultStatePath()
+
+func defaultStatePath() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "github-radar", "state.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "data/state.json"
+	}
+	return filepath.Join(home, ".local", "share", "github-radar", "state.json")
+}
 
 // CurrentVersion is the current state file format version.
 const CurrentVersion = 1

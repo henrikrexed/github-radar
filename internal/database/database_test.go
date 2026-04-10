@@ -884,6 +884,137 @@ func TestReposNeedingClassification(t *testing.T) {
 	}
 }
 
+// Story 11.5: UpdateClassification with minConfidence logic
+
+func TestUpdateClassification_HighConfidence(t *testing.T) {
+	db := mustOpen(t)
+
+	repo := &RepoRecord{
+		FullName: "test/repo", Owner: "test", Name: "repo",
+		Status: "pending", PrimaryCategory: "",
+	}
+	if err := db.UpsertRepo(repo); err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	err := db.UpdateClassification("test/repo", "kubernetes", 0.92, "hash123", "qwen3:1.7b", 0.6)
+	if err != nil {
+		t.Fatalf("UpdateClassification: %v", err)
+	}
+
+	got, err := db.GetRepo("test/repo")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if got.PrimaryCategory != "kubernetes" {
+		t.Errorf("PrimaryCategory = %q, want %q", got.PrimaryCategory, "kubernetes")
+	}
+	if got.CategoryConfidence != 0.92 {
+		t.Errorf("CategoryConfidence = %f, want 0.92", got.CategoryConfidence)
+	}
+	if got.ReadmeHash != "hash123" {
+		t.Errorf("ReadmeHash = %q, want %q", got.ReadmeHash, "hash123")
+	}
+	if got.ModelUsed != "qwen3:1.7b" {
+		t.Errorf("ModelUsed = %q, want %q", got.ModelUsed, "qwen3:1.7b")
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want %q (above minConfidence)", got.Status, "active")
+	}
+	if got.ClassifiedAt == "" {
+		t.Error("ClassifiedAt should be set")
+	}
+}
+
+func TestUpdateClassification_LowConfidence_NeedsReview(t *testing.T) {
+	db := mustOpen(t)
+
+	repo := &RepoRecord{
+		FullName: "test/repo", Owner: "test", Name: "repo",
+		Status: "pending", PrimaryCategory: "",
+	}
+	if err := db.UpsertRepo(repo); err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	// Confidence 0.3 is below minConfidence 0.6
+	err := db.UpdateClassification("test/repo", "other", 0.3, "hash456", "qwen3:1.7b", 0.6)
+	if err != nil {
+		t.Fatalf("UpdateClassification: %v", err)
+	}
+
+	got, err := db.GetRepo("test/repo")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if got.Status != "needs_review" {
+		t.Errorf("Status = %q, want %q (below minConfidence)", got.Status, "needs_review")
+	}
+	if got.PrimaryCategory != "other" {
+		t.Errorf("PrimaryCategory = %q, want %q", got.PrimaryCategory, "other")
+	}
+}
+
+func TestUpdateClassification_ExactThreshold(t *testing.T) {
+	db := mustOpen(t)
+
+	repo := &RepoRecord{
+		FullName: "test/repo", Owner: "test", Name: "repo",
+		Status: "pending", PrimaryCategory: "",
+	}
+	if err := db.UpsertRepo(repo); err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	// Confidence exactly at threshold → should be "active" (not < threshold)
+	err := db.UpdateClassification("test/repo", "kubernetes", 0.6, "hash789", "qwen3:1.7b", 0.6)
+	if err != nil {
+		t.Fatalf("UpdateClassification: %v", err)
+	}
+
+	got, err := db.GetRepo("test/repo")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want %q (at exact threshold)", got.Status, "active")
+	}
+}
+
+func TestUpdateClassification_Reclassify(t *testing.T) {
+	db := mustOpen(t)
+
+	// First classification
+	repo := &RepoRecord{
+		FullName: "test/repo", Owner: "test", Name: "repo",
+		Status: "active", PrimaryCategory: "observability",
+		CategoryConfidence: 0.7, ReadmeHash: "oldhash", ModelUsed: "old-model",
+	}
+	if err := db.UpsertRepo(repo); err != nil {
+		t.Fatalf("UpsertRepo: %v", err)
+	}
+
+	// Re-classify with new category
+	err := db.UpdateClassification("test/repo", "kubernetes", 0.95, "newhash", "new-model", 0.6)
+	if err != nil {
+		t.Fatalf("UpdateClassification: %v", err)
+	}
+
+	got, err := db.GetRepo("test/repo")
+	if err != nil {
+		t.Fatalf("GetRepo: %v", err)
+	}
+	if got.PrimaryCategory != "kubernetes" {
+		t.Errorf("PrimaryCategory = %q, want %q", got.PrimaryCategory, "kubernetes")
+	}
+	if got.ModelUsed != "new-model" {
+		t.Errorf("ModelUsed = %q, want %q", got.ModelUsed, "new-model")
+	}
+	if got.ReadmeHash != "newhash" {
+		t.Errorf("ReadmeHash = %q, want %q", got.ReadmeHash, "newhash")
+	}
+}
+
 func TestSetTopicsFromSlice(t *testing.T) {
 	r := &RepoRecord{}
 	r.SetTopicsFromSlice([]string{"a", "b", "c"})

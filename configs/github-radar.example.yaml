@@ -25,6 +25,46 @@ scoring:
     pr_velocity: 1.0
     issue_velocity: 0.5
 
+classification:
+  ollama_endpoint: "http://10.0.0.185:11434"
+  model: "qwen3:1.7b"
+  timeout_ms: 30000
+  max_readme_chars: 2000
+  min_confidence: 0.6
+  categories:
+    - ai-agents
+    - llm-tooling
+    - kubernetes
+    - observability
+    - cloud-native-security
+    - networking
+    - service-mesh
+    - platform-engineering
+    - gitops
+    - mlops
+    - vector-database
+    - rag
+    - wasm
+    - developer-tools
+    - infrastructure
+    - data-engineering
+    - testing
+    - container-runtime
+    - other
+  system_prompt: |
+    You are a GitHub repository classifier for CNCF and cloud-native projects.
+    Classify into exactly ONE category from: {{.Categories}}
+    If unclear, use "other".
+    Respond ONLY with JSON: {"category": "<name>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}
+  user_prompt: |
+    Repository: {{.RepoName}}
+    Description: {{.Description}}
+    Language: {{.Language}}
+    Topics: {{.Topics}}
+    Stars: {{.Stars}} (trend: {{.StarTrend}})
+    README excerpt:
+    {{.Readme}}
+
 exclusions:
   - example-org/example-repo
 

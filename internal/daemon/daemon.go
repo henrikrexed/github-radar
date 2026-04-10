@@ -305,6 +305,7 @@ func (d *Daemon) runScan() {
 	d.mu.RUnlock()
 
 	repos := make([]github.Repo, 0, len(repositories))
+	seen := make(map[string]bool, len(repositories))
 	for _, tracked := range repositories {
 		// Skip excluded repos
 		if isExcluded(tracked.Repo, exclusions) {
@@ -313,6 +314,22 @@ func (d *Daemon) runScan() {
 		parts := strings.SplitN(tracked.Repo, "/", 2)
 		if len(parts) == 2 {
 			repos = append(repos, github.Repo{Owner: parts[0], Name: parts[1]})
+			seen[tracked.Repo] = true
+		}
+	}
+
+	// Also include auto-discovered repos from state store
+	for fullName := range d.store.AllRepoStates() {
+		if seen[fullName] {
+			continue
+		}
+		if isExcluded(fullName, exclusions) {
+			continue
+		}
+		parts := strings.SplitN(fullName, "/", 2)
+		if len(parts) == 2 {
+			repos = append(repos, github.Repo{Owner: parts[0], Name: parts[1]})
+			seen[fullName] = true
 		}
 	}
 
@@ -344,10 +361,15 @@ func (d *Daemon) runScan() {
 		d.runDiscovery()
 	}
 
-	// Update status info
+	// Export metrics for all repos (including auto-tracked from discovery)
+	if d.exporter != nil {
+		d.exportMetrics()
+	}
+
+	// Update status info — count all repos in state (includes config + discovered)
 	d.mu.Lock()
 	d.lastScan = scanStartTime
-	d.reposTracked = len(repos)
+	d.reposTracked = len(d.store.AllRepoStates())
 	d.rateLimitRemain = d.client.RateLimitInfo().Remaining
 	d.mu.Unlock()
 
