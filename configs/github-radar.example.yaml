@@ -6,9 +6,8 @@ github:
   rate_limit: 4000
 
 otel:
-  endpoint: http://localhost:4318
-  headers:
-    Authorization: "Api-Token ${DT_API_TOKEN:-}"
+  endpoint: ${OTEL_ENDPOINT:-http://otel-collector:4318}
+  headers: {}
   service_name: github-radar
 
 discovery:

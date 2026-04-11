@@ -139,7 +139,7 @@ func DefaultConfig() *Config {
 			RateLimit: 4000,
 		},
 		Otel: OtelConfig{
-			Endpoint:    "http://localhost:4318",
+			Endpoint:    "",
 			ServiceName: "github-radar",
 		},
 		Discovery: DiscoveryConfig{
