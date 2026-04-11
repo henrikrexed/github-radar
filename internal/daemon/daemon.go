@@ -410,6 +410,9 @@ func (d *Daemon) runScan() {
 		d.runDiscovery()
 	}
 
+	// Sync in-memory store to database so classification and metric export can find repos
+	d.syncStoreToDatabase()
+
 	// Run classification if enabled
 	if d.classifier != nil {
 		d.runClassification()
@@ -546,6 +549,59 @@ func (d *Daemon) exportMetrics() {
 		logging.Error("metrics flush failed", "error", err)
 	} else {
 		logging.Info("metrics flushed successfully")
+	}
+}
+
+// syncStoreToDatabase syncs repos from the in-memory store to the SQLite database.
+// This ensures the classification pipeline and metric export can find repo records.
+// Only scan-related fields are updated; classification fields are preserved.
+func (d *Daemon) syncStoreToDatabase() {
+	if d.db == nil {
+		return
+	}
+
+	allStates := d.store.AllRepoStates()
+	synced := 0
+	for fullName, rs := range allStates {
+		parts := strings.SplitN(fullName, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		record := &database.RepoRecord{
+			FullName:              fullName,
+			Owner:                 parts[0],
+			Name:                  parts[1],
+			Stars:                 rs.Stars,
+			StarsPrev:             rs.StarsPrev,
+			Forks:                 rs.Forks,
+			Contributors:          rs.Contributors,
+			ContributorsPrev:      rs.ContributorsPrev,
+			GrowthScore:           rs.GrowthScore,
+			NormalizedGrowthScore: rs.NormalizedGrowthScore,
+			StarVelocity:          rs.StarVelocity,
+			StarAcceleration:      rs.StarAcceleration,
+			PRVelocity:            rs.PRVelocity,
+			IssueVelocity:         rs.IssueVelocity,
+			ContributorGrowth:     rs.ContributorGrowth,
+			MergedPRs7d:           rs.MergedPRs7d,
+			NewIssues7d:           rs.NewIssues7d,
+			LastCollectedAt:       rs.LastCollected.Format(time.RFC3339),
+			ETag:                  rs.ETag,
+			LastModified:          rs.LastModified,
+			Status:                "pending",
+			FirstSeenAt:           time.Now().Format(time.RFC3339),
+		}
+
+		if err := d.db.SyncScanData(record); err != nil {
+			logging.Error("failed to sync repo to database", "repo", fullName, "error", err)
+			continue
+		}
+		synced++
+	}
+
+	if synced > 0 {
+		logging.Info("synced repos from store to database", "count", synced)
 	}
 }
 
