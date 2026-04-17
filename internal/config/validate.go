@@ -98,6 +98,12 @@ func (c *Config) Validate() error {
 	if c.Scoring.Weights.StarAcceleration < 0 {
 		issues = append(issues, fmt.Sprintf("scoring.weights.star_acceleration: must be >= 0, got %f", c.Scoring.Weights.StarAcceleration))
 	}
+	if c.Scoring.Weights.ForkVelocity < 0 {
+		issues = append(issues, fmt.Sprintf("scoring.weights.fork_velocity: must be >= 0, got %f", c.Scoring.Weights.ForkVelocity))
+	}
+	if c.Scoring.Weights.ReleaseCadence < 0 {
+		issues = append(issues, fmt.Sprintf("scoring.weights.release_cadence: must be >= 0, got %f", c.Scoring.Weights.ReleaseCadence))
+	}
 	if c.Scoring.Weights.ContributorGrowth < 0 {
 		issues = append(issues, fmt.Sprintf("scoring.weights.contributor_growth: must be >= 0, got %f", c.Scoring.Weights.ContributorGrowth))
 	}

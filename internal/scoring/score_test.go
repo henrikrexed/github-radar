@@ -3,6 +3,7 @@ package scoring
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func TestDefaultWeights(t *testing.T) {
@@ -560,5 +561,112 @@ func TestCustomWeights(t *testing.T) {
 	if scoreHighPRs.RawScore <= scoreHighStars.RawScore {
 		t.Errorf("high PR repo (%v) should score higher than high stars repo (%v) with PR weight=100",
 			scoreHighPRs.RawScore, scoreHighStars.RawScore)
+	}
+}
+
+func TestCalculateForkVelocity(t *testing.T) {
+	tests := []struct {
+		name         string
+		current      int
+		previous     int
+		daysElapsed  float64
+		wantVelocity float64
+	}{
+		{"positive growth", 50, 20, 7.0, 30.0 / 7.0},
+		{"no growth", 20, 20, 7.0, 0},
+		{"first time (zero days)", 20, 0, 0, 0},
+		{"fork drop (deleted forks)", 15, 20, 5.0, -1.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateForkVelocity(tt.current, tt.previous, tt.daysElapsed)
+			if math.Abs(got-tt.wantVelocity) > 0.001 {
+				t.Errorf("CalculateForkVelocity() = %v, want %v", got, tt.wantVelocity)
+			}
+		})
+	}
+}
+
+func TestCalculateReleaseCadence(t *testing.T) {
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		dates []time.Time
+		want  float64
+	}{
+		{"no releases", nil, 0},
+		{
+			name: "three releases in last 90 days",
+			dates: []time.Time{
+				now.AddDate(0, 0, -5),
+				now.AddDate(0, 0, -30),
+				now.AddDate(0, 0, -80),
+			},
+			want: 1.0, // 3 releases / 3 = 1 per 30-day window
+		},
+		{
+			name: "releases outside 90d window ignored",
+			dates: []time.Time{
+				now.AddDate(0, 0, -10),
+				now.AddDate(0, 0, -120),
+			},
+			want: 1.0 / 3.0,
+		},
+		{
+			name: "future-dated release ignored (clock skew defense)",
+			dates: []time.Time{
+				now.AddDate(0, 0, 5),
+				now.AddDate(0, 0, -10),
+			},
+			want: 1.0 / 3.0,
+		},
+		{
+			name: "zero-value timestamps ignored",
+			dates: []time.Time{
+				{},
+				now.AddDate(0, 0, -15),
+			},
+			want: 1.0 / 3.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateReleaseCadence(tt.dates, now)
+			if math.Abs(got-tt.want) > 0.001 {
+				t.Errorf("CalculateReleaseCadence() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCalculator_CalculateVelocities_ForkAndRelease(t *testing.T) {
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	calc := NewCalculatorWithDefaults()
+
+	m := RepoMetrics{
+		Stars:       1000,
+		StarsPrev:   900,
+		Forks:       200,
+		ForksPrev:   150,
+		DaysElapsed: 5.0,
+		RecentReleaseDates: []time.Time{
+			now.AddDate(0, 0, -2),
+			now.AddDate(0, 0, -40),
+		},
+		Now: now,
+	}
+
+	v := calc.CalculateVelocities(m)
+
+	wantFork := 50.0 / 5.0
+	if math.Abs(v.ForkVelocity-wantFork) > 0.001 {
+		t.Errorf("ForkVelocity = %v, want %v", v.ForkVelocity, wantFork)
+	}
+	wantCadence := 2.0 / 3.0
+	if math.Abs(v.ReleaseCadence-wantCadence) > 0.001 {
+		t.Errorf("ReleaseCadence = %v, want %v", v.ReleaseCadence, wantCadence)
 	}
 }

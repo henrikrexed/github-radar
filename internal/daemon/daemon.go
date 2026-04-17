@@ -118,6 +118,8 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	scanner.SetScoringWeights(scoring.Weights{
 		StarVelocity:      cfg.Scoring.Weights.StarVelocity,
 		StarAcceleration:  cfg.Scoring.Weights.StarAcceleration,
+		ForkVelocity:      cfg.Scoring.Weights.ForkVelocity,
+		ReleaseCadence:    cfg.Scoring.Weights.ReleaseCadence,
 		ContributorGrowth: cfg.Scoring.Weights.ContributorGrowth,
 		PRVelocity:        cfg.Scoring.Weights.PRVelocity,
 		IssueVelocity:     cfg.Scoring.Weights.IssueVelocity,
