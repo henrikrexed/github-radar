@@ -59,11 +59,25 @@ func (c *Client) ShouldBackoff() bool {
 }
 
 // IsRateLimitExhausted returns true if rate limit is completely exhausted.
+// Treats a reset timestamp that has already passed as "not exhausted" and
+// clears stale state so the next request fetches a fresh rate-limit header.
 func (c *Client) IsRateLimitExhausted() bool {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	stale := !c.rateLimit.Reset.IsZero() && c.rateLimit.Reset.Before(time.Now())
+	exhausted := c.rateLimit.Remaining == 0 && c.rateLimit.Limit > 0
+	c.mu.RUnlock()
 
-	return c.rateLimit.Remaining == 0 && c.rateLimit.Limit > 0
+	if !stale {
+		return exhausted
+	}
+
+	c.mu.Lock()
+	if !c.rateLimit.Reset.IsZero() && c.rateLimit.Reset.Before(time.Now()) {
+		c.rateLimit.Remaining = 0
+		c.rateLimit.Limit = 0
+	}
+	c.mu.Unlock()
+	return false
 }
 
 // TimeUntilReset returns the duration until the rate limit resets.
