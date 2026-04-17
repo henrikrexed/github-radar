@@ -161,24 +161,47 @@ func (s *Scanner) updateRepoState(owner, name string, result *CollectionResult, 
 		newState.NewIssues7d = result.Activity.NewIssues7d
 	}
 
+	// Carry forward release history, then append new release if we observe one.
+	if prev != nil {
+		newState.LatestReleaseAt = prev.LatestReleaseAt
+		if len(prev.RecentReleaseDates) > 0 {
+			newState.RecentReleaseDates = append(newState.RecentReleaseDates, prev.RecentReleaseDates...)
+		}
+	}
+	if result.Activity != nil && result.Activity.LatestRelease != nil {
+		latest := result.Activity.LatestRelease.PublishedAt
+		if !latest.IsZero() && !latest.Equal(newState.LatestReleaseAt) {
+			// Prepend newest, keep max 10
+			newState.RecentReleaseDates = append([]time.Time{latest}, newState.RecentReleaseDates...)
+			if len(newState.RecentReleaseDates) > 10 {
+				newState.RecentReleaseDates = newState.RecentReleaseDates[:10]
+			}
+			newState.LatestReleaseAt = latest
+		}
+	}
+
 	// Build scoring metrics from current and previous data
 	metrics := scoring.RepoMetrics{
-		Stars:        newState.Stars,
-		Forks:        newState.Forks,
-		Contributors: newState.Contributors,
-		MergedPRs7d:  newState.MergedPRs7d,
-		NewIssues7d:  newState.NewIssues7d,
+		Stars:              newState.Stars,
+		Forks:              newState.Forks,
+		Contributors:       newState.Contributors,
+		MergedPRs7d:        newState.MergedPRs7d,
+		NewIssues7d:        newState.NewIssues7d,
+		RecentReleaseDates: newState.RecentReleaseDates,
+		Now:                result.Collected,
 	}
 
 	// Include previous state for velocity calculations
 	if prev != nil && !prev.LastCollected.IsZero() {
 		metrics.StarsPrev = prev.Stars
+		metrics.ForksPrev = prev.Forks
 		metrics.ContributorsPrev = prev.Contributors
 		metrics.DaysElapsed = result.Collected.Sub(prev.LastCollected).Hours() / 24
 		metrics.PrevStarVelocity = prev.StarVelocity
 
 		// Store previous values for reference
 		newState.StarsPrev = prev.Stars
+		newState.ForksPrev = prev.Forks
 		newState.ContributorsPrev = prev.Contributors
 	}
 
@@ -186,6 +209,8 @@ func (s *Scanner) updateRepoState(owner, name string, result *CollectionResult, 
 	velocities := s.calculator.CalculateVelocities(metrics)
 	newState.StarVelocity = velocities.StarVelocity
 	newState.StarAcceleration = velocities.StarAcceleration
+	newState.ForkVelocity = velocities.ForkVelocity
+	newState.ReleaseCadence = velocities.ReleaseCadence
 	newState.PRVelocity = velocities.PRVelocity
 	newState.IssueVelocity = velocities.IssueVelocity
 	newState.ContributorGrowth = velocities.ContributorGrowth

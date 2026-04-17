@@ -4,23 +4,28 @@ package scoring
 import (
 	"math"
 	"sort"
+	"time"
 )
 
 // Weights contains the configurable weights for composite scoring.
 type Weights struct {
 	StarVelocity      float64
 	StarAcceleration  float64
+	ForkVelocity      float64
+	ReleaseCadence    float64
 	ContributorGrowth float64
 	PRVelocity        float64
 	IssueVelocity     float64
 }
 
 // DefaultWeights returns the default scoring weights.
-// Default weights: star=2.0, accel=3.0, contrib=1.5, pr=1.0, issue=0.5
+// Default weights: star=2.0, accel=3.0, fork=1.5, release=1.0, contrib=1.5, pr=1.0, issue=0.5
 func DefaultWeights() Weights {
 	return Weights{
 		StarVelocity:      2.0,
 		StarAcceleration:  3.0,
+		ForkVelocity:      1.5,
+		ReleaseCadence:    1.0,
 		ContributorGrowth: 1.5,
 		PRVelocity:        1.0,
 		IssueVelocity:     0.5,
@@ -36,23 +41,34 @@ type RepoMetrics struct {
 
 	// Previous values (for velocity calculation)
 	StarsPrev        int
+	ForksPrev        int
 	ContributorsPrev int
 
 	// Activity metrics (7-day window)
 	MergedPRs7d int
 	NewIssues7d int
 
+	// Release timestamps observed for this repo (newest first, bounded history).
+	// Used to derive release cadence over a 90-day rolling window.
+	RecentReleaseDates []time.Time
+
 	// Time elapsed since last measurement (in days)
 	DaysElapsed float64
 
 	// Previous velocities (for acceleration)
 	PrevStarVelocity float64
+
+	// Now is the reference timestamp for time-windowed calculations.
+	// Zero value falls back to time.Now() at call site.
+	Now time.Time
 }
 
 // VelocityMetrics contains calculated velocity values.
 type VelocityMetrics struct {
 	StarVelocity      float64 // Stars gained per day
 	StarAcceleration  float64 // Change in star velocity
+	ForkVelocity      float64 // Forks gained per day
+	ReleaseCadence    float64 // Releases per 30-day window (rolling 90d)
 	PRVelocity        float64 // PRs merged per day
 	IssueVelocity     float64 // Issues opened per day
 	ContributorGrowth float64 // Contributors gained per day
@@ -93,6 +109,16 @@ func (c *Calculator) CalculateVelocities(metrics RepoMetrics) VelocityMetrics {
 	// Requires at least 2 data points (else 0)
 	v.StarAcceleration = CalculateStarAcceleration(v.StarVelocity, metrics.PrevStarVelocity)
 
+	// Fork velocity: (current_forks - previous_forks) / days_elapsed
+	v.ForkVelocity = CalculateForkVelocity(metrics.Forks, metrics.ForksPrev, metrics.DaysElapsed)
+
+	// Release cadence: releases per 30 days, computed over a 90-day rolling window.
+	now := metrics.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	v.ReleaseCadence = CalculateReleaseCadence(metrics.RecentReleaseDates, now)
+
 	// PR velocity: merged_prs / 7 (normalized to daily rate)
 	v.PRVelocity = CalculatePRVelocity(metrics.MergedPRs7d)
 
@@ -111,11 +137,15 @@ func (c *Calculator) CalculateRawScore(v VelocityMetrics) float64 {
 	// Formula:
 	// growth_score = (star_velocity × weight_star) +
 	//                (star_acceleration × weight_accel) +
+	//                (fork_velocity × weight_fork) +
+	//                (release_cadence × weight_release) +
 	//                (contributor_growth × weight_contrib) +
 	//                (pr_velocity × weight_pr) +
 	//                (issue_velocity × weight_issue)
 	return (v.StarVelocity * c.weights.StarVelocity) +
 		(v.StarAcceleration * c.weights.StarAcceleration) +
+		(v.ForkVelocity * c.weights.ForkVelocity) +
+		(v.ReleaseCadence * c.weights.ReleaseCadence) +
 		(v.ContributorGrowth * c.weights.ContributorGrowth) +
 		(v.PRVelocity * c.weights.PRVelocity) +
 		(v.IssueVelocity * c.weights.IssueVelocity)
@@ -183,6 +213,43 @@ func CalculateContributorGrowth(currentContribs, previousContribs int, daysElaps
 		return 0
 	}
 	return float64(currentContribs-previousContribs) / daysElapsed
+}
+
+// CalculateForkVelocity calculates forks gained per day.
+// Mirrors CalculateStarVelocity: first-time repos use 0 as baseline.
+func CalculateForkVelocity(currentForks, previousForks int, daysElapsed float64) float64 {
+	if daysElapsed <= 0 {
+		return 0
+	}
+	return float64(currentForks-previousForks) / daysElapsed
+}
+
+// CalculateReleaseCadence returns releases observed per 30-day window,
+// evaluated over a rolling 90-day lookback. Returns 0 when no release
+// timestamps are available. Future-dated release timestamps (e.g. clock
+// skew) are ignored.
+func CalculateReleaseCadence(releaseDates []time.Time, now time.Time) float64 {
+	if len(releaseDates) == 0 {
+		return 0
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	windowStart := now.AddDate(0, 0, -90)
+	count := 0
+	for _, d := range releaseDates {
+		if d.IsZero() {
+			continue
+		}
+		if d.After(now) {
+			continue
+		}
+		if d.After(windowStart) {
+			count++
+		}
+	}
+	// 90-day window → divide by 3 to get per-30-day rate
+	return float64(count) / 3.0
 }
 
 // NormalizeScores normalizes raw scores to a 0-100 scale.

@@ -80,6 +80,8 @@ type ScoringConfig struct {
 type WeightConfig struct {
 	StarVelocity      float64 `yaml:"star_velocity"`
 	StarAcceleration  float64 `yaml:"star_acceleration"`
+	ForkVelocity      float64 `yaml:"fork_velocity"`
+	ReleaseCadence    float64 `yaml:"release_cadence"`
 	ContributorGrowth float64 `yaml:"contributor_growth"`
 	PRVelocity        float64 `yaml:"pr_velocity"`
 	IssueVelocity     float64 `yaml:"issue_velocity"`
@@ -153,6 +155,8 @@ func DefaultConfig() *Config {
 			Weights: WeightConfig{
 				StarVelocity:      2.0,
 				StarAcceleration:  3.0,
+				ForkVelocity:      1.5,
+				ReleaseCadence:    1.0,
 				ContributorGrowth: 1.5,
 				PRVelocity:        1.0,
 				IssueVelocity:     0.5,
