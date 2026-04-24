@@ -61,8 +61,83 @@ func TestOpen_SchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMetadata: %v", err)
 	}
-	if version != "1" {
-		t.Errorf("schema_version = %q, want %q", version, "1")
+	// Schema v2 drops the empty description/topics columns (ISI-744).
+	if version != "2" {
+		t.Errorf("schema_version = %q, want %q", version, "2")
+	}
+}
+
+// TestMigrateDropDescriptionTopics seeds a legacy v1 schema (with description
+// and topics columns) and verifies that reopening the DB drops them and bumps
+// schema_version to 2. Regression test for ISI-744.
+func TestMigrateDropDescriptionTopics(t *testing.T) {
+	path := tempDBPath(t)
+
+	// Step 1: create a legacy DB with the v1 schema that included
+	// description and topics columns. Use raw SQL to simulate an older DB.
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`ALTER TABLE repos ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
+	); err != nil {
+		t.Fatalf("ALTER ADD description: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`ALTER TABLE repos ADD COLUMN topics TEXT NOT NULL DEFAULT ''`,
+	); err != nil {
+		t.Fatalf("ALTER ADD topics: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`UPDATE metadata SET value = '1' WHERE key = 'schema_version'`,
+	); err != nil {
+		t.Fatalf("reset schema_version: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO repos (full_name, owner, name, description, topics)
+		 VALUES ('legacy/repo', 'legacy', 'repo', 'old desc', 'a,b,c')`,
+	); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	db.Close()
+
+	// Step 2: reopen — this should run the migration.
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("re-Open: %v", err)
+	}
+	t.Cleanup(func() { db2.Close() })
+
+	version, err := db2.GetMetadata("schema_version")
+	if err != nil {
+		t.Fatalf("GetMetadata: %v", err)
+	}
+	if version != "2" {
+		t.Errorf("schema_version after migration = %q, want %q", version, "2")
+	}
+
+	present, err := db2.columnsExist("repos", "description", "topics")
+	if err != nil {
+		t.Fatalf("columnsExist: %v", err)
+	}
+	if present["description"] {
+		t.Error("description column still present after migration")
+	}
+	if present["topics"] {
+		t.Error("topics column still present after migration")
+	}
+
+	// Existing row should still be readable through the current API.
+	got, err := db2.GetRepo("legacy/repo")
+	if err != nil {
+		t.Fatalf("GetRepo legacy row: %v", err)
+	}
+	if got == nil {
+		t.Fatal("legacy row lost during migration")
+	}
+	if got.FullName != "legacy/repo" {
+		t.Errorf("FullName = %q, want %q", got.FullName, "legacy/repo")
 	}
 }
 
@@ -120,15 +195,14 @@ func TestUpsertAndGetRepo(t *testing.T) {
 	db := mustOpen(t)
 
 	repo := &RepoRecord{
-		FullName:    "cilium/cilium",
-		Owner:       "cilium",
-		Name:        "cilium",
-		Stars:       20000,
-		StarsPrev:   19500,
-		Forks:       5000,
-		Language:    "Go",
-		Description: "eBPF-based Networking",
-		Status:      "pending",
+		FullName:  "cilium/cilium",
+		Owner:     "cilium",
+		Name:      "cilium",
+		Stars:     20000,
+		StarsPrev: 19500,
+		Forks:     5000,
+		Language:  "Go",
+		Status:    "pending",
 	}
 
 	if err := db.UpsertRepo(repo); err != nil {
@@ -679,24 +753,8 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
-// Topics helper
-
-func TestTopicsSlice(t *testing.T) {
-	r := &RepoRecord{Topics: "kubernetes,cncf,networking"}
-	got := r.TopicsSlice()
-	if len(got) != 3 {
-		t.Errorf("TopicsSlice len = %d, want 3", len(got))
-	}
-	if got[0] != "kubernetes" {
-		t.Errorf("TopicsSlice[0] = %q, want %q", got[0], "kubernetes")
-	}
-
-	// Empty topics
-	r2 := &RepoRecord{Topics: ""}
-	if got := r2.TopicsSlice(); got != nil {
-		t.Errorf("empty TopicsSlice = %v, want nil", got)
-	}
-}
+// Topics + description are no longer persisted (ISI-744). The schema has
+// dropped those columns; the classifier live-fetches them from the GitHub API.
 
 // Story 11.7: Classification and reclassification triggers
 
@@ -1015,10 +1073,3 @@ func TestUpdateClassification_Reclassify(t *testing.T) {
 	}
 }
 
-func TestSetTopicsFromSlice(t *testing.T) {
-	r := &RepoRecord{}
-	r.SetTopicsFromSlice([]string{"a", "b", "c"})
-	if r.Topics != "a,b,c" {
-		t.Errorf("Topics = %q, want %q", r.Topics, "a,b,c")
-	}
-}

@@ -56,6 +56,12 @@ func NewPipeline(db *database.DB, gh *github.Client, ollama *OllamaClient, cfg c
 // ClassifySingle classifies a single repository by fetching its README,
 // building prompts, calling the LLM, and returning the result.
 // It does NOT persist the result to the database — the caller decides whether to save.
+//
+// Description and topics are live-fetched from the GitHub API here instead of
+// read from the database (ISI-744). The scanner does not persist those fields
+// because they were empty for 100% of repos in production; the GitHub API is
+// the authoritative source and classification runs are rare enough that one
+// extra `GET /repos/{owner}/{name}` per repo is acceptable.
 func (p *Pipeline) ClassifySingle(ctx context.Context, repo database.RepoRecord) (*Result, error) {
 	start := time.Now()
 
@@ -89,6 +95,18 @@ func (p *Pipeline) ClassifySingle(ctx context.Context, repo database.RepoRecord)
 		}, nil
 	}
 
+	// Live-fetch description + topics from the GitHub API. If the fetch fails
+	// we continue with empty values rather than aborting — the README is still
+	// the main classifier signal, and matches prior behavior where DB columns
+	// were effectively empty strings.
+	var description, topics string
+	if repoMeta, metaErr := p.gh.GetRepository(ctx, owner, name); metaErr == nil && repoMeta != nil {
+		description = repoMeta.Description
+		topics = strings.Join(repoMeta.Topics, ",")
+	} else if metaErr != nil {
+		log.Printf("[classification] WARNING: live-fetch description/topics failed for %s: %v", repo.FullName, metaErr)
+	}
+
 	truncated := TruncateReadme(readmeContent, p.cfg.MaxReadmeChars)
 
 	// Build prompts.
@@ -106,9 +124,9 @@ func (p *Pipeline) ClassifySingle(ctx context.Context, repo database.RepoRecord)
 
 	userPrompt, err := BuildUserPrompt(p.cfg.UserPrompt, PromptData{
 		RepoName:    repo.FullName,
-		Description: repo.Description,
+		Description: description,
 		Language:    repo.Language,
-		Topics:      repo.Topics,
+		Topics:      topics,
 		Stars:       repo.Stars,
 		StarTrend:   starTrend,
 		Readme:      truncated,

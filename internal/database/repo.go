@@ -3,18 +3,21 @@ package database
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 )
 
 // RepoRecord represents a repository row in the database.
+//
+// Note: description and topics are intentionally NOT persisted (ISI-744). They
+// are live-fetched from the GitHub API at classification time, so the scanner
+// schema stays truthful and avoids carrying misleading empty strings. See
+// docs/architecture.md for the rationale.
 type RepoRecord struct {
 	ID                    int64
 	FullName              string
 	Owner                 string
 	Name                  string
 	Language              string
-	Description           string
 	Stars                 int
 	StarsPrev             int
 	Forks                 int
@@ -36,7 +39,6 @@ type RepoRecord struct {
 	CreatedAt             string
 	FirstSeenAt           string
 	LastCollectedAt       string
-	Topics                string // comma-separated
 	Status                string
 	ETag                  string
 	LastModified          string
@@ -58,7 +60,7 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 
 	r := &RepoRecord{}
 	err := d.db.QueryRow(`
-		SELECT id, full_name, owner, name, language, description,
+		SELECT id, full_name, owner, name, language,
 			stars, stars_prev, forks, open_issues, open_prs,
 			contributors, contributors_prev,
 			growth_score, normalized_growth_score,
@@ -67,11 +69,11 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 			merged_prs_7d, new_issues_7d,
 			latest_release, latest_release_date,
 			created_at, first_seen_at, last_collected_at,
-			topics, status, etag, last_modified,
+			status, etag, last_modified,
 			primary_category, category_confidence, readme_hash,
 			classified_at, model_used, force_category, excluded
 		FROM repos WHERE full_name = ?`, fullName).Scan(
-		&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language, &r.Description,
+		&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language,
 		&r.Stars, &r.StarsPrev, &r.Forks, &r.OpenIssues, &r.OpenPRs,
 		&r.Contributors, &r.ContributorsPrev,
 		&r.GrowthScore, &r.NormalizedGrowthScore,
@@ -80,7 +82,7 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 		&r.MergedPRs7d, &r.NewIssues7d,
 		&r.LatestRelease, &r.LatestReleaseDate,
 		&r.CreatedAt, &r.FirstSeenAt, &r.LastCollectedAt,
-		&r.Topics, &r.Status, &r.ETag, &r.LastModified,
+		&r.Status, &r.ETag, &r.LastModified,
 		&r.PrimaryCategory, &r.CategoryConfidence, &r.ReadmeHash,
 		&r.ClassifiedAt, &r.ModelUsed, &r.ForceCategory, &r.Excluded,
 	)
@@ -100,7 +102,7 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 
 	_, err := d.db.Exec(`
 		INSERT INTO repos (
-			full_name, owner, name, language, description,
+			full_name, owner, name, language,
 			stars, stars_prev, forks, open_issues, open_prs,
 			contributors, contributors_prev,
 			growth_score, normalized_growth_score,
@@ -109,27 +111,26 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			merged_prs_7d, new_issues_7d,
 			latest_release, latest_release_date,
 			created_at, first_seen_at, last_collected_at,
-			topics, status, etag, last_modified,
+			status, etag, last_modified,
 			primary_category, category_confidence, readme_hash,
 			classified_at, model_used, force_category, excluded
 		) VALUES (
-			?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?,
-			?, ?,
-			?, ?,
-			?, ?,
-			?, ?, ?,
-			?, ?,
-			?, ?,
-			?, ?, ?,
 			?, ?, ?, ?,
+			?, ?, ?, ?, ?,
+			?, ?,
+			?, ?,
+			?, ?,
+			?, ?, ?,
+			?, ?,
+			?, ?,
+			?, ?, ?,
+			?, ?, ?,
 			?, ?, ?,
 			?, ?, ?, ?
 		) ON CONFLICT(full_name) DO UPDATE SET
 			owner = excluded.owner,
 			name = excluded.name,
 			language = excluded.language,
-			description = excluded.description,
 			stars = excluded.stars,
 			stars_prev = excluded.stars_prev,
 			forks = excluded.forks,
@@ -150,7 +151,6 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			latest_release_date = excluded.latest_release_date,
 			created_at = excluded.created_at,
 			last_collected_at = excluded.last_collected_at,
-			topics = excluded.topics,
 			status = excluded.status,
 			etag = excluded.etag,
 			last_modified = excluded.last_modified,
@@ -161,7 +161,7 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			model_used = excluded.model_used,
 			force_category = excluded.force_category,
 			excluded = excluded.excluded`,
-		r.FullName, r.Owner, r.Name, r.Language, r.Description,
+		r.FullName, r.Owner, r.Name, r.Language,
 		r.Stars, r.StarsPrev, r.Forks, r.OpenIssues, r.OpenPRs,
 		r.Contributors, r.ContributorsPrev,
 		r.GrowthScore, r.NormalizedGrowthScore,
@@ -170,7 +170,7 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 		r.MergedPRs7d, r.NewIssues7d,
 		r.LatestRelease, r.LatestReleaseDate,
 		r.CreatedAt, r.FirstSeenAt, r.LastCollectedAt,
-		r.Topics, r.Status, r.ETag, r.LastModified,
+		r.Status, r.ETag, r.LastModified,
 		r.PrimaryCategory, r.CategoryConfidence, r.ReadmeHash,
 		r.ClassifiedAt, r.ModelUsed, r.ForceCategory, r.Excluded,
 	)
@@ -188,7 +188,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 
 	_, err := d.db.Exec(`
 		INSERT INTO repos (
-			full_name, owner, name, language, description,
+			full_name, owner, name, language,
 			stars, stars_prev, forks, open_issues, open_prs,
 			contributors, contributors_prev,
 			growth_score, normalized_growth_score,
@@ -197,9 +197,9 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 			merged_prs_7d, new_issues_7d,
 			latest_release, latest_release_date,
 			created_at, first_seen_at, last_collected_at,
-			topics, status, etag, last_modified
+			status, etag, last_modified
 		) VALUES (
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?,
 			?, ?, ?, ?, ?,
 			?, ?,
 			?, ?,
@@ -208,7 +208,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 			?, ?,
 			?, ?,
 			?, ?, ?,
-			?, ?, ?, ?
+			?, ?, ?
 		) ON CONFLICT(full_name) DO UPDATE SET
 			stars = excluded.stars,
 			stars_prev = excluded.stars_prev,
@@ -229,7 +229,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 			last_collected_at = excluded.last_collected_at,
 			etag = excluded.etag,
 			last_modified = excluded.last_modified`,
-		r.FullName, r.Owner, r.Name, r.Language, r.Description,
+		r.FullName, r.Owner, r.Name, r.Language,
 		r.Stars, r.StarsPrev, r.Forks, r.OpenIssues, r.OpenPRs,
 		r.Contributors, r.ContributorsPrev,
 		r.GrowthScore, r.NormalizedGrowthScore,
@@ -238,7 +238,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 		r.MergedPRs7d, r.NewIssues7d,
 		r.LatestRelease, r.LatestReleaseDate,
 		r.CreatedAt, r.FirstSeenAt, r.LastCollectedAt,
-		r.Topics, r.Status, r.ETag, r.LastModified,
+		r.Status, r.ETag, r.LastModified,
 	)
 	if err != nil {
 		return fmt.Errorf("syncing scan data for %s: %w", r.FullName, err)
@@ -337,7 +337,7 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 	for rows.Next() {
 		var r RepoRecord
 		if err := rows.Scan(
-			&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language, &r.Description,
+			&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language,
 			&r.Stars, &r.StarsPrev, &r.Forks, &r.OpenIssues, &r.OpenPRs,
 			&r.Contributors, &r.ContributorsPrev,
 			&r.GrowthScore, &r.NormalizedGrowthScore,
@@ -346,7 +346,7 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 			&r.MergedPRs7d, &r.NewIssues7d,
 			&r.LatestRelease, &r.LatestReleaseDate,
 			&r.CreatedAt, &r.FirstSeenAt, &r.LastCollectedAt,
-			&r.Topics, &r.Status, &r.ETag, &r.LastModified,
+			&r.Status, &r.ETag, &r.LastModified,
 			&r.PrimaryCategory, &r.CategoryConfidence, &r.ReadmeHash,
 			&r.ClassifiedAt, &r.ModelUsed, &r.ForceCategory, &r.Excluded,
 		); err != nil {
@@ -612,15 +612,3 @@ func (d *DB) AllRepoStatesMap() (map[string]RepoRecord, error) {
 	return result, nil
 }
 
-// TopicsSlice parses the comma-separated topics string into a slice.
-func (r *RepoRecord) TopicsSlice() []string {
-	if r.Topics == "" {
-		return nil
-	}
-	return strings.Split(r.Topics, ",")
-}
-
-// SetTopicsFromSlice joins a slice into the comma-separated topics string.
-func (r *RepoRecord) SetTopicsFromSlice(topics []string) {
-	r.Topics = strings.Join(topics, ",")
-}

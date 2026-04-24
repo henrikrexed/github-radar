@@ -84,8 +84,11 @@ func (d *DB) Path() string {
 	return d.path
 }
 
-// initSchema creates the repos table and indexes if they don't exist.
-// This covers Story 10.1 (base schema) and Story 10.2 (classification columns).
+// initSchema creates the repos table and indexes if they don't exist, then
+// runs any forward-only migrations.
+// Base schema: Story 10.1 (repos table) + Story 10.2 (classification columns).
+// Migration v2 (ISI-744): drops empty persisted description/topics columns; the
+// classifier live-fetches those from the GitHub API at classification time.
 func (d *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS repos (
@@ -94,7 +97,6 @@ func (d *DB) initSchema() error {
 		owner           TEXT    NOT NULL,
 		name            TEXT    NOT NULL,
 		language        TEXT    NOT NULL DEFAULT '',
-		description     TEXT    NOT NULL DEFAULT '',
 		stars           INTEGER NOT NULL DEFAULT 0,
 		stars_prev      INTEGER NOT NULL DEFAULT 0,
 		forks           INTEGER NOT NULL DEFAULT 0,
@@ -116,7 +118,6 @@ func (d *DB) initSchema() error {
 		created_at      TEXT    NOT NULL DEFAULT '',
 		first_seen_at   TEXT    NOT NULL DEFAULT (datetime('now')),
 		last_collected_at TEXT  NOT NULL DEFAULT '',
-		topics          TEXT    NOT NULL DEFAULT '',
 		status          TEXT    NOT NULL DEFAULT 'pending',
 		etag            TEXT    NOT NULL DEFAULT '',
 		last_modified   TEXT    NOT NULL DEFAULT '',
@@ -165,5 +166,100 @@ func (d *DB) initSchema() error {
 		return fmt.Errorf("setting schema version: %w", err)
 	}
 
+	if err := d.migrateDropDescriptionTopics(); err != nil {
+		return fmt.Errorf("migration (drop description/topics): %w", err)
+	}
+
 	return nil
+}
+
+// migrateDropDescriptionTopics drops the empty `description` and `topics`
+// columns from an existing `repos` table (ISI-744). A live audit of the
+// production scanner.db found these were empty strings for 100% of 559 active
+// repos — the classifier already consumes live values from the GitHub API, so
+// persisting them added nothing but misleading shape. Forward-only: once a DB
+// is at schema_version >= 2 the migration is a no-op.
+//
+// SQLite 3.35+ supports `ALTER TABLE ... DROP COLUMN` (modernc.org/sqlite
+// v1.48.1 bundles SQLite 3.45+), so this runs as a single transaction.
+func (d *DB) migrateDropDescriptionTopics() error {
+	var version string
+	err := d.db.QueryRow(
+		`SELECT value FROM metadata WHERE key = 'schema_version'`,
+	).Scan(&version)
+	if err != nil {
+		return fmt.Errorf("reading schema version: %w", err)
+	}
+	if version != "" && version != "1" {
+		return nil // already migrated
+	}
+
+	has, err := d.columnsExist("repos", "description", "topics")
+	if err != nil {
+		return err
+	}
+
+	if has["description"] || has["topics"] {
+		tx, err := d.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration: %w", err)
+		}
+		if has["description"] {
+			if _, err := tx.Exec(`ALTER TABLE repos DROP COLUMN description`); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("dropping description: %w", err)
+			}
+		}
+		if has["topics"] {
+			if _, err := tx.Exec(`ALTER TABLE repos DROP COLUMN topics`); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("dropping topics: %w", err)
+			}
+		}
+		if _, err := tx.Exec(
+			`UPDATE metadata SET value = '2' WHERE key = 'schema_version'`,
+		); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("bumping schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration: %w", err)
+		}
+		return nil
+	}
+
+	// Columns already absent (fresh DB): bump version outside a tx.
+	if _, err := d.db.Exec(
+		`UPDATE metadata SET value = '2' WHERE key = 'schema_version'`,
+	); err != nil {
+		return fmt.Errorf("bumping schema version: %w", err)
+	}
+	return nil
+}
+
+// columnsExist returns a map of column name → present for the given table.
+func (d *DB) columnsExist(table string, names ...string) (map[string]bool, error) {
+	rows, err := d.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return nil, fmt.Errorf("pragma table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+
+	present := make(map[string]bool, len(names))
+	for _, n := range names {
+		present[n] = false
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, fmt.Errorf("scanning table_info row: %w", err)
+		}
+		if _, ok := present[name]; ok {
+			present[name] = true
+		}
+	}
+	return present, rows.Err()
 }

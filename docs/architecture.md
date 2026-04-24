@@ -85,7 +85,29 @@ This prevents corruption if the process crashes mid-write.
 
 The state store is thread-safe (uses `sync.RWMutex`) for concurrent access by the daemon's scan loop and HTTP status endpoint.
 
-### State Schema
+### Scanner SQLite Schema
+
+The scanner persists repo metrics and classification state in `scanner.db`
+(SQLite, path derived from `$XDG_DATA_HOME/github-radar/` or
+`$HOME/.local/share/github-radar/`). The `repos` table carries scan metrics,
+growth/velocity scoring, conditional-request cache (ETag/Last-Modified), and
+classification outputs (`primary_category`, `category_confidence`,
+`readme_hash`, etc.).
+
+**Not persisted: `description` and `topics`.** These were previously stored as
+columns but were empty strings for 100% of active repos in production
+(see [ISI-743](./)). As of schema version 2 they are dropped from the schema
+and live-fetched from the GitHub API at classification time. The classifier
+and any downstream consumers (gold-set builders, evaluation samples) must
+treat the GitHub API as the source of truth for those fields. A forward-only
+migration in `database.Open` drops the legacy columns the first time an older
+DB is opened.
+
+#### Legacy JSON State Schema
+
+Older installations persisted state as a JSON file. The scanner still reads
+it on first boot and migrates to SQLite automatically; the JSON shape is
+kept here for reference.
 
 ```json
 {
