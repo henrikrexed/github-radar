@@ -69,6 +69,37 @@ type DiscoveryConfig struct {
 	MinStars           int      `yaml:"min_stars"`            // Minimum stars filter (default: 100)
 	MaxAgeDays         int      `yaml:"max_age_days"`         // Maximum repo age in days (0 = no limit)
 	AutoTrackThreshold float64  `yaml:"auto_track_threshold"` // Growth score threshold for auto-tracking
+
+	// Sources configures discovery sources beyond the default topic
+	// search. Each sub-source is feature-flagged and disabled by
+	// default; rollout is staged via config alone (no rebuild needed).
+	Sources DiscoverySourcesConfig `yaml:"sources"`
+}
+
+// DiscoverySourcesConfig groups the per-source discovery sub-configs.
+type DiscoverySourcesConfig struct {
+	// Orgs is Source (3) of the 4-source funnel: per-org repository
+	// search. Catches actively-maintained repos under high-signal
+	// orgs (kubernetes, hashicorp, opentelemetry, …).
+	Orgs DiscoveryOrgsConfig `yaml:"orgs"`
+	// Languages is Source (4): language-pivot search for popular
+	// projects pushed within recent windows.
+	Languages DiscoveryLanguagesConfig `yaml:"languages"`
+}
+
+// DiscoveryOrgsConfig configures org-scoped repository search.
+type DiscoveryOrgsConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	Names    []string `yaml:"names"`     // GitHub org logins to search
+	MinStars int      `yaml:"min_stars"` // Override Discovery.MinStars; 0 = inherit
+}
+
+// DiscoveryLanguagesConfig configures language-pivot repository search.
+type DiscoveryLanguagesConfig struct {
+	Enabled         bool     `yaml:"enabled"`
+	Names           []string `yaml:"names"`             // GitHub language identifiers
+	MinStars        int      `yaml:"min_stars"`         // Override Discovery.MinStars; 0 = inherit
+	PushWindowsDays []int    `yaml:"push_windows_days"` // pushed:>= windows in days; empty = [7]
 }
 
 // ScoringConfig contains growth scoring settings.
