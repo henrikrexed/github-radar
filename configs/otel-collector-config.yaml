@@ -19,11 +19,15 @@ exporters:
       Authorization: "Api-Token ${DT_API_TOKEN}"
 
   debug:
-    verbosity: basic
+    verbosity: detailed
+
+  file/metrics:
+    path: /tmp/github-radar-metrics.json
+    format: json
 
 service:
   pipelines:
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/dynatrace, debug]
+      exporters: [otlphttp/dynatrace, debug, file/metrics]

@@ -1,0 +1,15 @@
+{
+  "_doc": "T9.2 fixture empty_topics_fallback: 5 normal repos clustered + 5 repos with empty topics. Expected: 5 empty-topic repos excluded from clustering but counted by aggregate-share computation.",
+  "repos": [
+    {"full_name": "ai/clust-1", "primary_category": "ai", "topics": ["normal-token"], "confidence": 0.8},
+    {"full_name": "ai/clust-2", "primary_category": "ai", "topics": ["normal-token"], "confidence": 0.8},
+    {"full_name": "ai/clust-3", "primary_category": "ai", "topics": ["normal-token"], "confidence": 0.8},
+    {"full_name": "ai/clust-4", "primary_category": "ai", "topics": ["normal-token"], "confidence": 0.8},
+    {"full_name": "ai/clust-5", "primary_category": "ai", "topics": ["normal-token"], "confidence": 0.8},
+    {"full_name": "ai/empty-1", "primary_category": "ai", "topics": [], "confidence": 0.7},
+    {"full_name": "ai/empty-2", "primary_category": "ai", "topics": [], "confidence": 0.7},
+    {"full_name": "ai/empty-3", "primary_category": "ai", "topics": [], "confidence": 0.7},
+    {"full_name": "ai/empty-4", "primary_category": "ai", "topics": [], "confidence": 0.7},
+    {"full_name": "ai/empty-5", "primary_category": "ai", "topics": [], "confidence": 0.7}
+  ]
+}

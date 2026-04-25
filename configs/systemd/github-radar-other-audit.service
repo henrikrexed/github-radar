@@ -1,0 +1,29 @@
+[Unit]
+Description=github-radar `<cat>/other` drift audit (T9)
+Documentation=https://github.com/hrexed/github-radar/blob/main/docs/audit.md
+# Run only after the network is up so Paperclip API calls have connectivity.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# `github-radar` user owns ~/.local/share/github-radar/scanner.db and the
+# audits/ output directory. Override via `systemctl --user edit` if
+# installed under a different account.
+ExecStart=%h/.local/bin/github-radar audit other-drift --file
+# Plan §6.1: the audit always exits 0 even on Paperclip API failure (the
+# report is the authoritative artifact). We still let systemd record the
+# run via journald.
+StandardOutput=journal
+StandardError=journal
+
+# Required env (set via `systemctl --user set-environment` or a drop-in):
+#   PAPERCLIP_API_KEY=<token>
+#   PAPERCLIP_API_URL=http://127.0.0.1:3100
+#   PAPERCLIP_COMPANY_ID=<uuid>
+#   GITHUB_RADAR_PAPERCLIP_PROJECT_ID=<uuid>
+#   GITHUB_RADAR_PAPERCLIP_AUDIT_PARENT_ID=<rotating audit-parent issue id>
+#   GITHUB_RADAR_PAPERCLIP_AUDIT_ASSIGNEE_ID=<product-manager agent id>
+
+[Install]
+WantedBy=default.target

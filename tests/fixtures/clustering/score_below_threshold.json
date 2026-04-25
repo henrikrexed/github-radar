@@ -1,0 +1,10 @@
+{
+  "_doc": "T9.2 fixture score_below_threshold: cluster of 5 with confidence 0.55 each → score = 5×0.55 = 2.75 < 3.0. Expected: watch-list entry, NOT auto-filed.",
+  "repos": [
+    {"full_name": "ai/sub-1", "primary_category": "ai", "topics": ["sub-token"], "confidence": 0.55},
+    {"full_name": "ai/sub-2", "primary_category": "ai", "topics": ["sub-token"], "confidence": 0.55},
+    {"full_name": "ai/sub-3", "primary_category": "ai", "topics": ["sub-token"], "confidence": 0.55},
+    {"full_name": "ai/sub-4", "primary_category": "ai", "topics": ["sub-token"], "confidence": 0.55},
+    {"full_name": "ai/sub-5", "primary_category": "ai", "topics": ["sub-token"], "confidence": 0.55}
+  ]
+}

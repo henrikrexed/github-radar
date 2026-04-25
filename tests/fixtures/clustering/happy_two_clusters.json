@@ -1,0 +1,25 @@
+{
+  "_doc": "T9.2 fixture happy_two_clusters: 5 repos sharing quantum-computing+variational-algorithms, 5 sharing federated-learning+differential-privacy, 10 with unique topics. Expected: 2 clusters auto-filed, 10 unclustered. Plan §3 steps 1-5 happy path.",
+  "repos": [
+    {"full_name": "ai/quantum-1", "primary_category": "ai", "topics": ["quantum-computing", "variational-algorithms"], "confidence": 0.85},
+    {"full_name": "ai/quantum-2", "primary_category": "ai", "topics": ["quantum-computing", "variational-algorithms"], "confidence": 0.85},
+    {"full_name": "ai/quantum-3", "primary_category": "ai", "topics": ["quantum-computing", "variational-algorithms"], "confidence": 0.85},
+    {"full_name": "ai/quantum-4", "primary_category": "ai", "topics": ["quantum-computing", "variational-algorithms"], "confidence": 0.85},
+    {"full_name": "ai/quantum-5", "primary_category": "ai", "topics": ["quantum-computing", "variational-algorithms"], "confidence": 0.85},
+    {"full_name": "ai/federated-1", "primary_category": "ai", "topics": ["federated-learning", "differential-privacy"], "confidence": 0.85},
+    {"full_name": "ai/federated-2", "primary_category": "ai", "topics": ["federated-learning", "differential-privacy"], "confidence": 0.85},
+    {"full_name": "ai/federated-3", "primary_category": "ai", "topics": ["federated-learning", "differential-privacy"], "confidence": 0.85},
+    {"full_name": "ai/federated-4", "primary_category": "ai", "topics": ["federated-learning", "differential-privacy"], "confidence": 0.85},
+    {"full_name": "ai/federated-5", "primary_category": "ai", "topics": ["federated-learning", "differential-privacy"], "confidence": 0.85},
+    {"full_name": "ai/loner-1", "primary_category": "ai", "topics": ["unique-topic-1"], "confidence": 0.7},
+    {"full_name": "ai/loner-2", "primary_category": "ai", "topics": ["unique-topic-2"], "confidence": 0.7},
+    {"full_name": "ai/loner-3", "primary_category": "ai", "topics": ["unique-topic-3"], "confidence": 0.7},
+    {"full_name": "ai/loner-4", "primary_category": "ai", "topics": ["unique-topic-4"], "confidence": 0.7},
+    {"full_name": "ai/loner-5", "primary_category": "ai", "topics": ["unique-topic-5"], "confidence": 0.7},
+    {"full_name": "ai/loner-6", "primary_category": "ai", "topics": ["unique-topic-6"], "confidence": 0.7},
+    {"full_name": "ai/loner-7", "primary_category": "ai", "topics": ["unique-topic-7"], "confidence": 0.7},
+    {"full_name": "ai/loner-8", "primary_category": "ai", "topics": ["unique-topic-8"], "confidence": 0.7},
+    {"full_name": "ai/loner-9", "primary_category": "ai", "topics": ["unique-topic-9"], "confidence": 0.7},
+    {"full_name": "ai/loner-10", "primary_category": "ai", "topics": ["unique-topic-10"], "confidence": 0.7}
+  ]
+}

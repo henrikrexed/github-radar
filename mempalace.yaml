@@ -1,0 +1,40 @@
+wing: github_radar_src
+rooms:
+- name: internal
+  description: Files from internal/
+  keywords:
+  - internal
+  - internal
+- name: configuration
+  description: Files from configs/
+  keywords:
+  - configuration
+  - configs
+- name: cmd
+  description: Files from cmd/
+  keywords:
+  - cmd
+  - cmd
+- name: pkg
+  description: Files from pkg/
+  keywords:
+  - pkg
+  - pkg
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: bin
+  description: Files from bin/
+  keywords:
+  - bin
+  - bin
+- name: backend
+  description: Files from database/
+  keywords:
+  - backend
+  - database
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []

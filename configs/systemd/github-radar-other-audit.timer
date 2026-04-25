@@ -1,0 +1,14 @@
+[Unit]
+Description=Monthly github-radar `<cat>/other` drift audit (T9)
+Documentation=https://github.com/hrexed/github-radar/blob/main/docs/audit.md
+
+[Timer]
+# Plan §4: monthly on the 1st at 03:00 local. Persistent=true so a missed
+# fire (host was off) is run on next boot.
+OnCalendar=*-*-01 03:00:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=github-radar-other-audit.service
+
+[Install]
+WantedBy=timers.target

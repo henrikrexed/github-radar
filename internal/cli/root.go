@@ -134,6 +134,9 @@ func (c *CLI) runCommand(cmd string, args []string) int {
 	case "status":
 		statusCmd := NewStatusCmd(c)
 		return statusCmd.Run(args)
+	case "audit":
+		auditCmd := NewAuditCmd(c)
+		return auditCmd.Run(args)
 	case "help":
 		c.printHelp()
 		return 0
@@ -191,6 +194,9 @@ Commands:
                               --state <path>
   status             Show daemon status
                      Options: --addr <url>, --format <text|json>
+  audit other-drift  Monthly <cat>/other drift audit (T9)
+                     Options: --dry-run (stdout), --file (persist + auto-file),
+                              --db <path>, --report-dir <path>
   config validate    Validate configuration file
   config show        Display current configuration
   help               Show this help message

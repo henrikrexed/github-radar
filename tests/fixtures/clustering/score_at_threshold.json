@@ -1,0 +1,10 @@
+{
+  "_doc": "T9.2 fixture score_at_threshold: cluster of 5, avg conf 0.61 → score 3.05 ≥ 3.00 AND avg_conf ≥ 0.6. Pin the auto-file boundary.",
+  "repos": [
+    {"full_name": "ai/at-1", "primary_category": "ai", "topics": ["at-token"], "confidence": 0.61},
+    {"full_name": "ai/at-2", "primary_category": "ai", "topics": ["at-token"], "confidence": 0.61},
+    {"full_name": "ai/at-3", "primary_category": "ai", "topics": ["at-token"], "confidence": 0.61},
+    {"full_name": "ai/at-4", "primary_category": "ai", "topics": ["at-token"], "confidence": 0.61},
+    {"full_name": "ai/at-5", "primary_category": "ai", "topics": ["at-token"], "confidence": 0.61}
+  ]
+}

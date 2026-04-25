@@ -209,6 +209,12 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		reloadChan: make(chan os.Signal, 1),
 	}
 
+	// Install API telemetry observer so every HTTP round-trip emits
+	// OTel counters and the rate-limit gauge stays fresh (T5 / ISI-716).
+	if exp != nil {
+		client.SetAPIObserver(newAPIObserver(ctx, exp))
+	}
+
 	// Set up HTTP server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", d.handleHealth)
@@ -371,8 +377,15 @@ func (d *Daemon) runScan() {
 		}
 	}
 
-	// Run scan
-	result, err := d.scanner.Scan(d.ctx, repos)
+	// Run scan — tiered refresh path if bulk fetch is enabled, else the
+	// legacy single-pass REST+conditional path.
+	var result *github.ScanResult
+	var err error
+	if d.cfg.GitHub.BulkFetchEnabled {
+		result, err = d.runTieredScan(repos)
+	} else {
+		result, err = d.scanner.Scan(d.ctx, repos)
+	}
 	if err != nil && err != context.Canceled {
 		logging.Error("scan failed", "error", err)
 	}
@@ -748,6 +761,93 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// runTieredScan classifies the candidate repos into refresh tiers and
+// dispatches each bucket to the appropriate scanner path:
+//   - TierHot / TierWarm / TierNew: GraphQL bulk fetch (≤1 call per 50
+//     repos for metadata), plus per-repo REST activity collection.
+//   - TierCold: existing REST path with conditional GET (preserves the
+//     304 cache-hit savings on long-tail repos).
+//
+// Per the ISI-709 plan §5 this keeps steady-state calls ≤ ~1,000/hr
+// at 3,000 repos and well under the 5000/hr budget with headroom for
+// discovery bursts.
+func (d *Daemon) runTieredScan(requested []github.Repo) (*github.ScanResult, error) {
+	tierCfg := tierConfigFromYAML(d.cfg.GitHub.Tiering)
+	candidates := d.buildTierCandidates()
+	assignments := github.ClassifyAll(candidates, time.Now(), tierCfg)
+	histogram := github.Count(assignments)
+	d.publishTierHistogram(histogram)
+
+	logging.Info("tiered scan planning",
+		"total", len(assignments),
+		"hot", histogram.Hot,
+		"warm", histogram.Warm,
+		"cold", histogram.Cold,
+		"new", histogram.New)
+
+	// Index requested repos so we only act on repos the operator asked for.
+	requestedSet := make(map[string]github.Repo, len(requested))
+	for _, r := range requested {
+		requestedSet[r.Owner+"/"+r.Name] = r
+	}
+
+	// Split due repos by tier.
+	var bulkBatch []github.Repo
+	var coldBatch []github.Repo
+	for _, a := range github.DueRepos(assignments) {
+		r, ok := requestedSet[a.FullName]
+		if !ok {
+			continue
+		}
+		if a.Tier == github.TierCold {
+			coldBatch = append(coldBatch, r)
+		} else {
+			bulkBatch = append(bulkBatch, r)
+		}
+	}
+
+	combined := &github.ScanResult{StartTime: time.Now()}
+
+	// Cold tier via REST + conditional GET.
+	if len(coldBatch) > 0 {
+		cr, err := d.scanner.Scan(d.ctx, coldBatch)
+		if err != nil && err != context.Canceled {
+			logging.Warn("cold-tier scan returned error", "error", err)
+		}
+		if cr != nil {
+			combined.Total += cr.Total
+			combined.Successful += cr.Successful
+			combined.Failed += cr.Failed
+			combined.Skipped += cr.Skipped
+			combined.Updated += cr.Updated
+			combined.FailedRepos = append(combined.FailedRepos, cr.FailedRepos...)
+		}
+	}
+
+	// Hot/warm/new tiers via GraphQL bulk fetch.
+	if len(bulkBatch) > 0 {
+		br, err := d.scanner.ScanBulk(d.ctx, bulkBatch)
+		if err != nil && err != context.Canceled {
+			logging.Warn("bulk-tier scan returned error", "error", err)
+		}
+		if br != nil {
+			combined.Total += br.Total
+			combined.Successful += br.Successful
+			combined.Failed += br.Failed
+			combined.Skipped += br.Skipped
+			combined.Updated += br.Updated
+			combined.FailedRepos = append(combined.FailedRepos, br.FailedRepos...)
+		}
+	}
+
+	// Re-publish rate limit snapshot after the sweep so the dashboard
+	// value is current even if no API calls raced a ticker reading.
+	d.publishRateLimit()
+
+	combined.EndTime = time.Now()
+	return combined, nil
 }
 
 // logWithLevel logs a message at the specified level.

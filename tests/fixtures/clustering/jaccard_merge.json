@@ -1,0 +1,11 @@
+{
+  "_doc": "T9.2 fixture jaccard_merge: token rust-tooling cluster of 5 + token cargo-plugin cluster of 5, 4 repos overlap (J=4/6≈0.67≥0.6). Expected: 1 merged cluster of 6.",
+  "repos": [
+    {"full_name": "ai/r1", "primary_category": "ai", "topics": ["rust-tooling", "cargo-plugin"], "confidence": 0.8},
+    {"full_name": "ai/r2", "primary_category": "ai", "topics": ["rust-tooling", "cargo-plugin"], "confidence": 0.8},
+    {"full_name": "ai/r3", "primary_category": "ai", "topics": ["rust-tooling", "cargo-plugin"], "confidence": 0.8},
+    {"full_name": "ai/r4", "primary_category": "ai", "topics": ["rust-tooling", "cargo-plugin"], "confidence": 0.8},
+    {"full_name": "ai/r5", "primary_category": "ai", "topics": ["rust-tooling"], "confidence": 0.8},
+    {"full_name": "ai/r6", "primary_category": "ai", "topics": ["cargo-plugin"], "confidence": 0.8}
+  ]
+}
