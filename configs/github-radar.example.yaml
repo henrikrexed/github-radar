@@ -13,9 +13,47 @@ otel:
 
 discovery:
   enabled: true
+  # Source (1) — topic search filter. Stage A target: 350 (down from 500).
+  # End target by Stage C/D: 100 (board floor signal, ISI-578).
   min_stars: 100
   max_age_days: 90
+  # Score threshold for auto-promotion to active tracking. Stage A: 7.
   auto_track_threshold: 50
+
+  # Sources beyond topic search. Each is feature-flagged and disabled
+  # by default so the rollout in ISI-578 can be staged via config alone.
+  # All sources share the 30 req/min Search API budget; the discoverer
+  # paces itself with a 2s inter-call throttle.
+  sources:
+    # Source (3) — org-scoped search. Catches actively-maintained repos
+    # under high-signal orgs that may not carry our topic labels.
+    # Enable at Stage A. Reference org list comes from ISI-578 plan rev 5.
+    orgs:
+      enabled: false
+      # min_stars: 100  # optional override; 0 inherits discovery.min_stars
+      names: []
+      #   - kubernetes
+      #   - hashicorp
+      #   - opentelemetry
+      #   - cncf
+      #   - prometheus
+      #   - grafana
+      #   - elastic
+      #   - influxdata
+    # Source (4) — language-pivot search. Catches popular projects
+    # actively maintained but not strongly tagged by topic.
+    # Enable at Stage A. push_windows_days controls freshness windows.
+    languages:
+      enabled: false
+      # min_stars: 500  # optional override; 0 inherits discovery.min_stars
+      names: []
+      #   - Rust
+      #   - Go
+      #   - Python
+      #   - TypeScript
+      #   - Zig
+      #   - Swift
+      push_windows_days: [7, 30, 90]
   topics:
     # Core cloud-native
     - kubernetes

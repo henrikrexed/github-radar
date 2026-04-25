@@ -28,6 +28,56 @@ type Config struct {
 
 	// Exclusions is a list of repo patterns to exclude
 	Exclusions []string
+
+	// Sources controls which discovery sources beyond the default topic
+	// search are active. Each source is feature-flagged and disabled by
+	// default so rollout can be staged via config alone.
+	//
+	// Source (1) — topic search — is always enabled when Topics is set.
+	// Source (3) — org-scoped search — is gated by Sources.Orgs.Enabled.
+	// Source (4) — language-pivot search — is gated by Sources.Languages.Enabled.
+	Sources SourcesConfig
+}
+
+// SourcesConfig contains per-source discovery configuration.
+type SourcesConfig struct {
+	Orgs      OrgsSourceConfig      `yaml:"orgs"`
+	Languages LanguagesSourceConfig `yaml:"languages"`
+}
+
+// OrgsSourceConfig configures Source (3): per-org repository search.
+//
+// When enabled, discovery iterates Names and runs `org:{name} stars:>={MinStars}`
+// per org. This catches actively-maintained repos under high-signal orgs
+// (kubernetes, hashicorp, opentelemetry, …) that may not have a topic
+// label matching our topic list.
+type OrgsSourceConfig struct {
+	// Enabled gates whether Source (3) runs at all.
+	Enabled bool `yaml:"enabled"`
+	// Names is the list of GitHub orgs to search.
+	Names []string `yaml:"names"`
+	// MinStars overrides Discovery.MinStars for org-scoped queries.
+	// Zero falls back to Discovery.MinStars.
+	MinStars int `yaml:"min_stars"`
+}
+
+// LanguagesSourceConfig configures Source (4): language-pivot search.
+//
+// When enabled, discovery runs `language:{name} stars:>={MinStars}
+// pushed:>={cutoff} sort:updated` for each language and each entry in
+// PushWindowsDays. Three windows (e.g. 7/30/90) catch both bursts and
+// long-running maintenance.
+type LanguagesSourceConfig struct {
+	// Enabled gates whether Source (4) runs at all.
+	Enabled bool `yaml:"enabled"`
+	// Names is the list of GitHub language identifiers to search.
+	Names []string `yaml:"names"`
+	// MinStars overrides Discovery.MinStars for language-pivot queries.
+	// Zero falls back to Discovery.MinStars.
+	MinStars int `yaml:"min_stars"`
+	// PushWindowsDays is the list of `pushed:>=` windows in days.
+	// Empty defaults to a single 7-day window.
+	PushWindowsDays []int `yaml:"push_windows_days"`
 }
 
 // DefaultConfig returns default discovery configuration.
@@ -74,12 +124,25 @@ type Result struct {
 	Repos          []DiscoveredRepo
 }
 
+// DefaultSearchAPIThrottle is the minimum delay between successive
+// Search API calls inside DiscoverAll. The GitHub Search API quota is
+// 30 req/min (~one call every 2 seconds). At 569 active repos × 177
+// configured topics we observed bursts saturating the per-minute window
+// mid-cycle (`rate limit exhausted, resets at <next minute>` in steady
+// state on 2026-04-25 10:27 CEST). 2s pacing keeps a single discoverer
+// at ~30 req/min steady-state while preserving headroom for retries.
+//
+// Tests construct a Discoverer with SetSearchThrottle(0) to keep the
+// suite fast; production code paths leave the default in place.
+const DefaultSearchAPIThrottle = 2 * time.Second
+
 // Discoverer handles repository discovery.
 type Discoverer struct {
 	client     *github.Client
 	store      *state.Store
 	calculator *scoring.Calculator
 	config     Config
+	throttle   time.Duration
 	onLog      func(level, msg string, args ...interface{})
 }
 
@@ -90,7 +153,15 @@ func NewDiscoverer(client *github.Client, store *state.Store, config Config) *Di
 		store:      store,
 		calculator: scoring.NewCalculatorWithDefaults(),
 		config:     config,
+		throttle:   DefaultSearchAPIThrottle,
 	}
+}
+
+// SetSearchThrottle overrides the inter-call Search API throttle.
+// Production code should leave this at DefaultSearchAPIThrottle; tests
+// pass 0 to avoid real-time waits.
+func (d *Discoverer) SetSearchThrottle(t time.Duration) {
+	d.throttle = t
 }
 
 // SetLogger sets a logging callback.
@@ -177,30 +248,255 @@ func (d *Discoverer) DiscoverTopic(ctx context.Context, topic string) (*Result, 
 	return result, nil
 }
 
-// DiscoverAll discovers repositories for all configured topics.
+// DiscoverAll runs every enabled discovery source and returns one
+// Result per (source, query) pair. The default topic source always
+// runs when Topics is set; org-scoped and language-pivot sources are
+// gated by Sources.Orgs.Enabled and Sources.Languages.Enabled.
+//
+// All sources share the same Search API budget, so DiscoverAll inserts
+// d.throttle between every successive Search call regardless of source.
+// Repositories surfaced by an earlier source are deduplicated out of
+// later results so a repo discovered by both topic and org search is
+// only inserted into discovered_known_repos once per cycle.
 func (d *Discoverer) DiscoverAll(ctx context.Context) ([]*Result, error) {
-	if len(d.config.Topics) == 0 {
-		d.log("info", "No topics configured, skipping discovery")
+	plan := d.buildSearchPlan()
+	if len(plan) == 0 {
+		d.log("info", "No discovery sources configured, skipping discovery")
 		return nil, nil
 	}
 
-	var results []*Result
-	for _, topic := range d.config.Topics {
+	var (
+		results []*Result
+		seen    = map[string]struct{}{}
+	)
+	for i, step := range plan {
 		select {
 		case <-ctx.Done():
 			return results, ctx.Err()
 		default:
 		}
 
-		result, err := d.DiscoverTopic(ctx, topic)
+		// Throttle to stay under the 30 req/min Search API quota,
+		// shared across topic / orgs / language-pivot sources. Skip
+		// the wait before the first call so a one-off run pays no
+		// upfront cost.
+		if i > 0 && d.throttle > 0 {
+			select {
+			case <-ctx.Done():
+				return results, ctx.Err()
+			case <-time.After(d.throttle):
+			}
+		}
+
+		result, err := step.run(ctx)
 		if err != nil {
-			d.log("warn", "Discovery failed for topic", "topic", topic, "error", err)
+			d.log("warn", "Discovery failed",
+				"source", step.source, "query", step.label, "error", err)
 			continue
 		}
+
+		// Cross-source dedup: drop any repo already surfaced this
+		// cycle by an earlier source. The first source wins
+		// (topic > orgs > languages by buildSearchPlan ordering),
+		// so org/language searches don't re-promote repos the
+		// topic search already counted.
+		result.Repos = filterAndMarkSeen(result.Repos, seen,
+			&result.AfterFilters, &result.NewRepos, &result.AutoTracked)
+
 		results = append(results, result)
 	}
 
 	return results, nil
+}
+
+// searchStep is one Search API call within a DiscoverAll cycle.
+type searchStep struct {
+	source string // "topic" | "org" | "language"
+	label  string // human-readable identifier shown in logs/results
+	run    func(ctx context.Context) (*Result, error)
+}
+
+// buildSearchPlan returns the ordered list of Search API calls to make
+// in a DiscoverAll cycle. Topic search runs first, then org-scoped,
+// then language-pivot. Order matters: cross-source dedup keeps the
+// earliest hit, so the most specific signal wins.
+func (d *Discoverer) buildSearchPlan() []searchStep {
+	var plan []searchStep
+
+	for _, topic := range d.config.Topics {
+		topic := topic
+		plan = append(plan, searchStep{
+			source: "topic",
+			label:  topic,
+			run:    func(ctx context.Context) (*Result, error) { return d.DiscoverTopic(ctx, topic) },
+		})
+	}
+
+	if d.config.Sources.Orgs.Enabled {
+		for _, org := range d.config.Sources.Orgs.Names {
+			org := org
+			plan = append(plan, searchStep{
+				source: "org",
+				label:  org,
+				run:    func(ctx context.Context) (*Result, error) { return d.DiscoverOrg(ctx, org) },
+			})
+		}
+	}
+
+	if d.config.Sources.Languages.Enabled {
+		windows := d.config.Sources.Languages.PushWindowsDays
+		if len(windows) == 0 {
+			windows = []int{7}
+		}
+		for _, lang := range d.config.Sources.Languages.Names {
+			for _, days := range windows {
+				lang, days := lang, days
+				plan = append(plan, searchStep{
+					source: "language",
+					label:  fmt.Sprintf("%s/pushed-%dd", lang, days),
+					run: func(ctx context.Context) (*Result, error) {
+						return d.DiscoverLanguage(ctx, lang, days)
+					},
+				})
+			}
+		}
+	}
+
+	return plan
+}
+
+// filterAndMarkSeen drops any DiscoveredRepo whose FullName is already
+// in seen, marking the rest as seen. Counters are decremented for
+// dropped entries so totals across sources reflect unique repos.
+func filterAndMarkSeen(repos []DiscoveredRepo, seen map[string]struct{}, afterFilters, newRepos, autoTracked *int) []DiscoveredRepo {
+	out := repos[:0]
+	for _, r := range repos {
+		if _, dup := seen[r.FullName]; dup {
+			if afterFilters != nil {
+				*afterFilters--
+			}
+			if newRepos != nil && !r.AlreadyTracked && !r.Excluded {
+				*newRepos--
+			}
+			if autoTracked != nil && r.ShouldAutoTrack && !r.AlreadyTracked && !r.Excluded {
+				*autoTracked--
+			}
+			continue
+		}
+		seen[r.FullName] = struct{}{}
+		out = append(out, r)
+	}
+	return out
+}
+
+// DiscoverOrg runs Source (3): org-scoped repository search. Returns
+// repos owned by org with at least Sources.Orgs.MinStars (or
+// Discovery.MinStars when zero). Honors the same age + exclusion +
+// auto-track logic as DiscoverTopic.
+func (d *Discoverer) DiscoverOrg(ctx context.Context, org string) (*Result, error) {
+	result := &Result{
+		Topic:     "org:" + org,
+		StartTime: time.Now(),
+		Repos:     []DiscoveredRepo{},
+	}
+
+	d.log("info", "Starting org discovery", "org", org)
+
+	repos, err := d.searchByOrg(ctx, org)
+	if err != nil {
+		return nil, fmt.Errorf("searching org %s: %w", org, err)
+	}
+
+	result.TotalFound = len(repos)
+	d.log("debug", "Org search completed", "org", org, "found", len(repos))
+
+	d.processSearchResults(repos, result)
+	d.normalizeScores(result)
+
+	result.EndTime = time.Now()
+	d.log("info", "Org discovery complete",
+		"org", org,
+		"found", result.TotalFound,
+		"after_filters", result.AfterFilters,
+		"new", result.NewRepos,
+		"auto_track", result.AutoTracked)
+
+	return result, nil
+}
+
+// DiscoverLanguage runs Source (4): language-pivot repository search
+// for one language and one push-window. The query
+// `language:{lang} stars:>={MinStars} pushed:>={cutoff} sort:updated`
+// catches actively-maintained popular projects across topics.
+func (d *Discoverer) DiscoverLanguage(ctx context.Context, lang string, pushDays int) (*Result, error) {
+	if pushDays <= 0 {
+		pushDays = 7
+	}
+	result := &Result{
+		Topic:     fmt.Sprintf("language:%s/pushed-%dd", lang, pushDays),
+		StartTime: time.Now(),
+		Repos:     []DiscoveredRepo{},
+	}
+
+	d.log("info", "Starting language discovery", "language", lang, "push_days", pushDays)
+
+	repos, err := d.searchByLanguage(ctx, lang, pushDays)
+	if err != nil {
+		return nil, fmt.Errorf("searching language %s pushed-%dd: %w", lang, pushDays, err)
+	}
+
+	result.TotalFound = len(repos)
+	d.log("debug", "Language search completed", "language", lang, "push_days", pushDays, "found", len(repos))
+
+	d.processSearchResults(repos, result)
+	d.normalizeScores(result)
+
+	result.EndTime = time.Now()
+	d.log("info", "Language discovery complete",
+		"language", lang,
+		"push_days", pushDays,
+		"found", result.TotalFound,
+		"after_filters", result.AfterFilters,
+		"new", result.NewRepos,
+		"auto_track", result.AutoTracked)
+
+	return result, nil
+}
+
+// processSearchResults runs the same filter/exclusion/auto-track
+// pipeline as DiscoverTopic does for its inline loop, against the
+// unified Result. Used by org and language sources to keep behavior
+// identical across sources.
+func (d *Discoverer) processSearchResults(repos []github.SearchResult, result *Result) {
+	for _, repo := range repos {
+		discovered := d.processRepo(repo)
+
+		if d.store.GetRepoState(discovered.FullName) != nil {
+			discovered.AlreadyTracked = true
+			result.AlreadyTracked++
+		}
+
+		if d.isExcluded(discovered.FullName) {
+			discovered.Excluded = true
+			result.Excluded++
+		}
+
+		if !d.passesFilters(discovered) {
+			continue
+		}
+
+		result.AfterFilters++
+
+		if !discovered.AlreadyTracked && !discovered.Excluded {
+			result.NewRepos++
+			if discovered.NormalizedScore >= d.config.AutoTrackThreshold {
+				discovered.ShouldAutoTrack = true
+				result.AutoTracked++
+			}
+		}
+
+		result.Repos = append(result.Repos, discovered)
+	}
 }
 
 // AutoTrack adds discovered repos that meet the threshold to tracking.
@@ -244,6 +540,49 @@ func (d *Discoverer) searchByTopic(ctx context.Context, topic string) ([]github.
 	}
 
 	return d.client.SearchRepositories(ctx, query, "stars", "desc", 100)
+}
+
+// searchByOrg searches GitHub for repositories under the given org with
+// at least the configured min-stars threshold. Source (3) of the
+// 4-source discovery funnel (plan rev 5).
+func (d *Discoverer) searchByOrg(ctx context.Context, org string) ([]github.SearchResult, error) {
+	minStars := d.config.Sources.Orgs.MinStars
+	if minStars <= 0 {
+		minStars = d.config.MinStars
+	}
+
+	query := fmt.Sprintf("org:%s stars:>=%d", org, minStars)
+
+	if d.config.MaxAgeDays > 0 {
+		cutoff := time.Now().AddDate(0, 0, -d.config.MaxAgeDays)
+		query += fmt.Sprintf(" created:>=%s", cutoff.Format("2006-01-02"))
+	}
+
+	return d.client.SearchRepositories(ctx, query, "stars", "desc", 100)
+}
+
+// searchByLanguage searches GitHub for repositories written in the
+// given language, recently pushed within pushDays, ordered by recent
+// update activity. Source (4) of the 4-source discovery funnel
+// (plan rev 5). Uses Sources.Languages.MinStars (falls back to
+// Discovery.MinStars). Does NOT apply MaxAgeDays — the push-window
+// filter already constrains freshness, and applying both would
+// over-filter long-running active projects (the exact signal this
+// source exists to catch).
+func (d *Discoverer) searchByLanguage(ctx context.Context, lang string, pushDays int) ([]github.SearchResult, error) {
+	if pushDays <= 0 {
+		pushDays = 7
+	}
+
+	minStars := d.config.Sources.Languages.MinStars
+	if minStars <= 0 {
+		minStars = d.config.MinStars
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -pushDays).Format("2006-01-02")
+	query := fmt.Sprintf("language:%s stars:>=%d pushed:>=%s", lang, minStars, cutoff)
+
+	return d.client.SearchRepositories(ctx, query, "updated", "desc", 100)
 }
 
 // processRepo converts a search result to a discovered repo with scores.

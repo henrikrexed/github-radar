@@ -134,6 +134,19 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 			MaxAgeDays:         cfg.Discovery.MaxAgeDays,
 			AutoTrackThreshold: cfg.Discovery.AutoTrackThreshold,
 			Exclusions:         cfg.Exclusions,
+			Sources: discovery.SourcesConfig{
+				Orgs: discovery.OrgsSourceConfig{
+					Enabled:  cfg.Discovery.Sources.Orgs.Enabled,
+					Names:    cfg.Discovery.Sources.Orgs.Names,
+					MinStars: cfg.Discovery.Sources.Orgs.MinStars,
+				},
+				Languages: discovery.LanguagesSourceConfig{
+					Enabled:         cfg.Discovery.Sources.Languages.Enabled,
+					Names:           cfg.Discovery.Sources.Languages.Names,
+					MinStars:        cfg.Discovery.Sources.Languages.MinStars,
+					PushWindowsDays: cfg.Discovery.Sources.Languages.PushWindowsDays,
+				},
+			},
 		}
 		disc = discovery.NewDiscoverer(client, store, discCfg)
 		disc.SetLogger(func(level, msg string, args ...interface{}) {
