@@ -177,6 +177,15 @@ func (d *Discoverer) DiscoverTopic(ctx context.Context, topic string) (*Result, 
 	return result, nil
 }
 
+// searchAPIThrottle is the minimum delay between successive Search API
+// calls inside DiscoverAll. The GitHub Search API quota is 30 req/min
+// (~one call every 2 seconds). At 569 active repos × 177 configured
+// topics we observed bursts saturating the per-minute window mid-cycle
+// (`rate limit exhausted, resets at <next minute>` in steady state on
+// 2026-04-25 10:27 CEST). A 2s pacing keeps a single discoverer at
+// ~30 req/min steady-state while preserving headroom for retries.
+const searchAPIThrottle = 2 * time.Second
+
 // DiscoverAll discovers repositories for all configured topics.
 func (d *Discoverer) DiscoverAll(ctx context.Context) ([]*Result, error) {
 	if len(d.config.Topics) == 0 {
@@ -185,11 +194,22 @@ func (d *Discoverer) DiscoverAll(ctx context.Context) ([]*Result, error) {
 	}
 
 	var results []*Result
-	for _, topic := range d.config.Topics {
+	for i, topic := range d.config.Topics {
 		select {
 		case <-ctx.Done():
 			return results, ctx.Err()
 		default:
+		}
+
+		// Throttle to stay under the 30 req/min Search API quota.
+		// Skip the wait before the first topic so a one-off discovery
+		// run doesn't pay an unnecessary 2s upfront.
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return results, ctx.Err()
+			case <-time.After(searchAPIThrottle):
+			}
 		}
 
 		result, err := d.DiscoverTopic(ctx, topic)
