@@ -50,6 +50,28 @@ func (t *TrackedRepo) UnmarshalYAML(value *yaml.Node) error {
 type GithubConfig struct {
 	Token     string `yaml:"token"`
 	RateLimit int    `yaml:"rate_limit"`
+
+	// BulkFetchEnabled turns on GraphQL bulk metadata fetch and tiered
+	// refresh cadence (T5 / ISI-716). When false, behaviour is the
+	// pre-T5 single-interval REST scan.
+	BulkFetchEnabled bool `yaml:"bulk_fetch_enabled"`
+
+	// Tiering overrides the default refresh cadence; leave zero to use
+	// the plan defaults (500 hot @ 1h, 1500 warm @ 4h, tail cold @ 12h,
+	// new-repo window 48h).
+	Tiering TieringConfig `yaml:"tiering"`
+}
+
+// TieringConfig parameterises the refresh tier classifier.
+// All fields default to DefaultTierConfig when zero.
+type TieringConfig struct {
+	HotN               int `yaml:"hot_n"`
+	WarmN              int `yaml:"warm_n"`
+	NewRepoWindowHours int `yaml:"new_repo_window_hours"`
+	HotIntervalMin     int `yaml:"hot_interval_min"`
+	WarmIntervalMin    int `yaml:"warm_interval_min"`
+	ColdIntervalMin    int `yaml:"cold_interval_min"`
+	NewIntervalMin     int `yaml:"new_interval_min"`
 }
 
 // OtelConfig contains OpenTelemetry export settings.

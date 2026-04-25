@@ -58,7 +58,16 @@ func (c *Client) GetConditional(ctx context.Context, path string, cond *Conditio
 	if resp.StatusCode == http.StatusNotModified {
 		resp.Body.Close()
 		result.NotModified = true
+		c.notifyCall("repo", "not_modified")
 		return result, nil
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		c.notifyCall("repo", "ok")
+	} else if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		c.notifyCall("repo", "rate_limited")
+	} else {
+		c.notifyCall("repo", "error")
 	}
 
 	result.Response = resp

@@ -251,6 +251,104 @@ func (s *Scanner) GetTopRepos(n int) []scoring.ScoredRepo {
 	return scoring.TopN(repos, n)
 }
 
+// ScanBulk performs a refresh sweep using the GraphQL bulk metadata
+// fetch (one HTTP call per 50 repos) and skips repos returning NotFound.
+// Activity metrics (7d PRs/issues, releases, contributors) are still
+// collected via REST per-repo but only when `collectActivity` is set.
+//
+// This path is used for the hot + warm tiers from the refresh classifier
+// where throughput matters more than per-repo 304 caching; the cold
+// tier continues to use `Scan()` which pairs REST with conditional GET.
+func (s *Scanner) ScanBulk(ctx context.Context, repos []Repo) (*ScanResult, error) {
+	result := &ScanResult{StartTime: time.Now()}
+	result.Total = len(repos)
+
+	if len(repos) == 0 {
+		result.EndTime = time.Now()
+		return result, nil
+	}
+
+	s.log("info", "Starting bulk scan via GraphQL", "repo_count", len(repos))
+
+	bulk, err := s.client.BulkFetchMetadata(ctx, repos)
+	if err != nil {
+		s.log("warn", "Bulk fetch failed", "error", err, "partial_metrics", len(bulk.Metrics))
+		// Fall through — caller may still want the partial results.
+	}
+	if n := len(bulk.FailedBatches); n > 0 {
+		s.log("warn", "Bulk fetch had per-batch failures",
+			"failed_batches", n,
+			"partial_metrics", len(bulk.Metrics),
+			"first_error", bulk.FailedBatches[0].Err)
+	}
+
+	notFound := make(map[string]struct{}, len(bulk.NotFound))
+	for _, fn := range bulk.NotFound {
+		notFound[fn] = struct{}{}
+	}
+
+	for _, repo := range repos {
+		select {
+		case <-ctx.Done():
+			s.log("warn", "Bulk scan cancelled", "completed", result.Successful+result.Failed)
+			result.EndTime = time.Now()
+			return result, ctx.Err()
+		default:
+		}
+
+		fullName := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+
+		if _, gone := notFound[fullName]; gone {
+			result.Failed++
+			result.FailedRepos = append(result.FailedRepos, fullName)
+			s.log("warn", "Repo not found via graphql", "repo", fullName)
+			continue
+		}
+
+		metrics := bulk.Metrics[fullName]
+		if metrics == nil {
+			result.Failed++
+			result.FailedRepos = append(result.FailedRepos, fullName)
+			continue
+		}
+
+		prevState := s.store.GetRepoState(fullName)
+		collResult := &CollectionResult{
+			Owner:     repo.Owner,
+			Name:      repo.Name,
+			FullName:  fullName,
+			Metrics:   metrics,
+			Collected: time.Now(),
+		}
+
+		// Optional activity collection (still REST — GraphQL
+		// equivalents would balloon the query cost beyond the 50-repo
+		// batch budget).
+		if s.collector != nil && s.collector.collectActivity {
+			if activity, err := s.client.GetActivityMetrics(ctx, repo.Owner, repo.Name); err == nil {
+				collResult.Activity = activity
+			}
+		}
+
+		s.updateRepoState(repo.Owner, repo.Name, collResult, prevState)
+		result.Successful++
+		result.Updated++
+	}
+
+	s.store.SetLastScan(time.Now())
+	if err := s.store.Save(); err != nil {
+		s.log("error", "Failed to save state", "error", err)
+	}
+
+	result.EndTime = time.Now()
+	s.log("info", "Bulk scan complete",
+		"total", result.Total,
+		"successful", result.Successful,
+		"failed", result.Failed,
+		"duration", result.EndTime.Sub(result.StartTime))
+	return result, nil
+}
+
 // GetClient returns the underlying GitHub client.
 func (s *Scanner) GetClient() *Client {
 	return s.client

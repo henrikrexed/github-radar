@@ -72,6 +72,14 @@ type Exporter struct {
 	prVelocityGauge        metric.Float64Gauge
 	issueVelocityGauge     metric.Float64Gauge
 	contributorGrowthGauge metric.Float64Gauge
+
+	// GitHub API budget instruments (T5 / ISI-716)
+	apiRateLimitGauge      metric.Int64Gauge
+	apiRateRemainingGauge  metric.Int64Gauge
+	apiRateUsedRatioGauge  metric.Float64Gauge
+	apiRateResetSecsGauge  metric.Int64Gauge
+	apiCallsCounter        metric.Int64Counter
+	refreshTierReposGauge  metric.Int64Gauge
 }
 
 // NewExporter creates a new metrics exporter.
@@ -261,6 +269,55 @@ func (e *Exporter) createInstruments() error {
 		return err
 	}
 
+	// GitHub API budget instruments (T5 / ISI-716) -----------------------
+	e.apiRateLimitGauge, err = e.meter.Int64Gauge("github.api.rate_limit.limit",
+		metric.WithDescription("GitHub API rate limit ceiling from X-RateLimit-Limit"),
+		metric.WithUnit("{calls}/h"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.apiRateRemainingGauge, err = e.meter.Int64Gauge("github.api.rate_limit.remaining",
+		metric.WithDescription("Remaining API calls in the current window from X-RateLimit-Remaining"),
+		metric.WithUnit("{calls}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.apiRateUsedRatioGauge, err = e.meter.Float64Gauge("github.api.rate_limit.used_ratio",
+		metric.WithDescription("Fraction of API budget consumed (0.0 - 1.0). Alert at ≥ 0.9."),
+		metric.WithUnit("{ratio}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.apiRateResetSecsGauge, err = e.meter.Int64Gauge("github.api.rate_limit.reset_seconds",
+		metric.WithDescription("Seconds until the rate limit window resets"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.apiCallsCounter, err = e.meter.Int64Counter("github.api.calls_total",
+		metric.WithDescription("GitHub API calls issued, tagged by resource and result"),
+		metric.WithUnit("{calls}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.refreshTierReposGauge, err = e.meter.Int64Gauge("github.api.refresh_tier.repos",
+		metric.WithDescription("Repo count currently assigned to each refresh tier"),
+		metric.WithUnit("{repos}"),
+	)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -330,6 +387,58 @@ func (e *Exporter) RecordRepoMetrics(ctx context.Context, m RepoMetrics) {
 	e.prVelocityGauge.Record(ctx, m.PRVelocity, attrSet)
 	e.issueVelocityGauge.Record(ctx, m.IssueVelocity, attrSet)
 	e.contributorGrowthGauge.Record(ctx, m.ContributorGrowth, attrSet)
+}
+
+// RateLimitSnapshot carries the inputs needed to populate the GitHub API
+// budget gauges. Remaining/Limit come from `X-RateLimit-*` headers;
+// ResetAt is the absolute reset timestamp.
+type RateLimitSnapshot struct {
+	Limit     int
+	Remaining int
+	ResetAt   time.Time
+}
+
+// RecordRateLimit emits all four API-budget gauges. Safe to call from
+// any goroutine; a zero Limit is treated as "no data yet" and we skip
+// the used_ratio gauge to avoid a misleading 1.0 reading.
+func (e *Exporter) RecordRateLimit(ctx context.Context, snap RateLimitSnapshot) {
+	e.apiRateLimitGauge.Record(ctx, int64(snap.Limit))
+	e.apiRateRemainingGauge.Record(ctx, int64(snap.Remaining))
+
+	if snap.Limit > 0 {
+		used := 1.0 - float64(snap.Remaining)/float64(snap.Limit)
+		if used < 0 {
+			used = 0
+		}
+		e.apiRateUsedRatioGauge.Record(ctx, used)
+	}
+
+	if !snap.ResetAt.IsZero() {
+		secs := int64(time.Until(snap.ResetAt).Seconds())
+		if secs < 0 {
+			secs = 0
+		}
+		e.apiRateResetSecsGauge.Record(ctx, secs)
+	}
+}
+
+// RecordAPICall increments the API call counter. `resource` should be
+// one of "repo", "graphql", "search", "activity", "readme"; `result` is
+// "ok" (2xx non-304), "not_modified" (304), "error", or "rate_limited".
+func (e *Exporter) RecordAPICall(ctx context.Context, resource, result string) {
+	e.apiCallsCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("resource", resource),
+		attribute.String("result", result),
+	))
+}
+
+// RecordRefreshTierHistogram emits one gauge reading per tier bucket.
+func (e *Exporter) RecordRefreshTierHistogram(ctx context.Context, counts map[string]int) {
+	for tier, n := range counts {
+		e.refreshTierReposGauge.Record(ctx, int64(n), metric.WithAttributes(
+			attribute.String("tier", tier),
+		))
+	}
 }
 
 // Flush forces an immediate export of all pending metrics.
