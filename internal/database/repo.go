@@ -292,6 +292,20 @@ func (d *DB) AllReposIncludeExcluded() ([]RepoRecord, error) {
 }
 
 // ReposByCategory returns repos matching a given primary_category.
+//
+// Deprecated: post-v3 taxonomy migration (ISI-714), primary_category holds the
+// top-level domain (e.g. "ai") rather than the legacy flat value (e.g.
+// "ai-agents"). Callers passing legacy flat strings will get zero rows. Prefer:
+//
+//   - ReposByCategoryPair(category, subcategory) for the new (cat, sub) tuple.
+//   - ReposByLegacyCategory(legacy) when the caller still has a flat legacy
+//     value (e.g. "ai-agents", "frontend-ui") — selects via the
+//     repos_legacy_v1 view so round-trip is preserved.
+//
+// Kept for backward compatibility with callers that already pass top-level
+// values (e.g. "observability", "ai"); semantically equivalent to
+// `ReposByLegacyCategory(category)` for the bijective subset where a top-level
+// value happens to also be a legacy flat value.
 func (d *DB) ReposByCategory(category string) ([]RepoRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -299,6 +313,50 @@ func (d *DB) ReposByCategory(category string) ([]RepoRecord, error) {
 	return d.queryRepos(
 		"SELECT "+repoSelectColumns+" FROM repos WHERE primary_category = ? AND excluded = 0 ORDER BY full_name",
 		category,
+	)
+}
+
+// ReposByCategoryPair returns non-excluded repos matching the given
+// (primary_category, primary_subcategory) tuple under the v3 taxonomy schema
+// (ISI-714). This is the preferred read path for code that knows the new
+// 2-level taxonomy.
+//
+// Both arguments are matched exactly; pass the top-level domain (e.g. "ai")
+// and the subcategory token (e.g. "agents"). To enumerate repos under a
+// top-level domain regardless of subcategory, use ReposByCategory.
+func (d *DB) ReposByCategoryPair(category, subcategory string) ([]RepoRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.queryRepos(
+		"SELECT "+repoSelectColumns+" FROM repos WHERE primary_category = ? AND primary_subcategory = ? AND excluded = 0 ORDER BY full_name",
+		category,
+		subcategory,
+	)
+}
+
+// ReposByLegacyCategory returns non-excluded repos whose pre-v3 flat category
+// matched the given legacy value (e.g. "ai-agents", "frontend-ui"). It selects
+// via the repos_legacy_v1 compatibility view, which exposes the snapshot
+// column primary_category_legacy as legacy_category — see
+// internal/database/schema_migration.go for the view definition and the
+// round-trip rationale.
+//
+// Use this when a caller still has a flat legacy string and you don't want to
+// re-derive (cat, subcat) from the lookup table. Prefer ReposByCategoryPair
+// for new code.
+//
+// Note: the returned RepoRecord.PrimaryCategory holds the *new* top-level
+// domain (e.g. "ai"), not the legacy flat value passed in. If the caller needs
+// the legacy form on the row, read it from primary_category_legacy directly
+// (added to RepoRecord by T3 WS2).
+func (d *DB) ReposByLegacyCategory(legacy string) ([]RepoRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.queryRepos(
+		"SELECT "+repoSelectColumns+" FROM repos_legacy_v1 WHERE legacy_category = ? AND excluded = 0 ORDER BY full_name",
+		legacy,
 	)
 }
 
