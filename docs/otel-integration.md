@@ -89,16 +89,33 @@ otel:
     Authorization: "Basic ${GRAFANA_OTLP_TOKEN}"
 ```
 
-### Local OTel Collector
+### Local OTel Collector → Dynatrace (Recommended)
 
-Run a local OpenTelemetry Collector and configure GitHub Radar to send to it:
+The default deployment uses a local OTel Collector as a gateway:
+
+```
+github-radar → OTel Collector (localhost:4318) → Dynatrace
+```
+
+GitHub Radar config (when using Docker Compose):
 
 ```yaml
 otel:
-  endpoint: http://localhost:4318
+  endpoint: http://otel-collector:4318
 ```
 
-Example OTel Collector config (`otel-collector-config.yaml`):
+Set these environment variables in your `.env` file:
+
+```bash
+DT_OTLP_ENDPOINT=https://{your-environment-id}.live.dynatrace.com/api/v2/otlp
+DT_API_TOKEN=dt0c01.xxxxx
+```
+
+The collector config (`configs/otel-collector-config.yaml`) is included in the repo and wired into `docker-compose.yml`. It receives OTLP/HTTP on port 4318, batches metrics, and forwards them to Dynatrace via OTLP/HTTP.
+
+### Local OTel Collector (Generic)
+
+For non-Dynatrace backends, customize the collector config:
 
 ```yaml
 receivers:

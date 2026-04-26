@@ -61,8 +61,11 @@ func TestOpen_SchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMetadata: %v", err)
 	}
-	if version != "1" {
-		t.Errorf("schema_version = %q, want %q", version, "1")
+	// Open() runs initSchema + runSchemaMigrations, so a fresh DB lands at
+	// the current schema version (bumped when the taxonomy v2 migration
+	// was introduced).
+	if version != SchemaVersionCurrent {
+		t.Errorf("schema_version = %q, want %q", version, SchemaVersionCurrent)
 	}
 }
 
@@ -120,15 +123,14 @@ func TestUpsertAndGetRepo(t *testing.T) {
 	db := mustOpen(t)
 
 	repo := &RepoRecord{
-		FullName:    "cilium/cilium",
-		Owner:       "cilium",
-		Name:        "cilium",
-		Stars:       20000,
-		StarsPrev:   19500,
-		Forks:       5000,
-		Language:    "Go",
-		Description: "eBPF-based Networking",
-		Status:      "pending",
+		FullName:  "cilium/cilium",
+		Owner:     "cilium",
+		Name:      "cilium",
+		Stars:     20000,
+		StarsPrev: 19500,
+		Forks:     5000,
+		Language:  "Go",
+		Status:    "pending",
 	}
 
 	if err := db.UpsertRepo(repo); err != nil {
@@ -679,24 +681,9 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
-// Topics helper
-
-func TestTopicsSlice(t *testing.T) {
-	r := &RepoRecord{Topics: "kubernetes,cncf,networking"}
-	got := r.TopicsSlice()
-	if len(got) != 3 {
-		t.Errorf("TopicsSlice len = %d, want 3", len(got))
-	}
-	if got[0] != "kubernetes" {
-		t.Errorf("TopicsSlice[0] = %q, want %q", got[0], "kubernetes")
-	}
-
-	// Empty topics
-	r2 := &RepoRecord{Topics: ""}
-	if got := r2.TopicsSlice(); got != nil {
-		t.Errorf("empty TopicsSlice = %v, want nil", got)
-	}
-}
+// Topics + description are no longer persisted (ISI-744, folded into the
+// taxonomy v3 migration). The RepoRecord fields and TopicsSlice helper are
+// gone; the classifier live-fetches them from the GitHub API.
 
 // Story 11.7: Classification and reclassification triggers
 
@@ -1012,13 +999,5 @@ func TestUpdateClassification_Reclassify(t *testing.T) {
 	}
 	if got.ReadmeHash != "newhash" {
 		t.Errorf("ReadmeHash = %q, want %q", got.ReadmeHash, "newhash")
-	}
-}
-
-func TestSetTopicsFromSlice(t *testing.T) {
-	r := &RepoRecord{}
-	r.SetTopicsFromSlice([]string{"a", "b", "c"})
-	if r.Topics != "a,b,c" {
-		t.Errorf("Topics = %q, want %q", r.Topics, "a,b,c")
 	}
 }

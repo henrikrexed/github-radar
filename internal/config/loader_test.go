@@ -166,8 +166,8 @@ github:
 	if cfg.GitHub.RateLimit != 4000 {
 		t.Errorf("GitHub.RateLimit = %d, want default %d", cfg.GitHub.RateLimit, 4000)
 	}
-	if cfg.Otel.Endpoint != "http://localhost:4318" {
-		t.Errorf("Otel.Endpoint = %q, want default %q", cfg.Otel.Endpoint, "http://localhost:4318")
+	if cfg.Otel.Endpoint != "" {
+		t.Errorf("Otel.Endpoint = %q, want default %q", cfg.Otel.Endpoint, "")
 	}
 	if cfg.Scoring.Weights.StarVelocity != 2.0 {
 		t.Errorf("Scoring.Weights.StarVelocity = %f, want default %f", cfg.Scoring.Weights.StarVelocity, 2.0)
@@ -223,8 +223,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.GitHub.RateLimit != 4000 {
 		t.Errorf("Default GitHub.RateLimit = %d, want %d", cfg.GitHub.RateLimit, 4000)
 	}
-	if cfg.Otel.Endpoint != "http://localhost:4318" {
-		t.Errorf("Default Otel.Endpoint = %q, want %q", cfg.Otel.Endpoint, "http://localhost:4318")
+	if cfg.Otel.Endpoint != "" {
+		t.Errorf("Default Otel.Endpoint = %q, want %q", cfg.Otel.Endpoint, "")
 	}
 	if cfg.Otel.ServiceName != "github-radar" {
 		t.Errorf("Default Otel.ServiceName = %q, want %q", cfg.Otel.ServiceName, "github-radar")

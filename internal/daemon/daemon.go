@@ -71,6 +71,7 @@ type Daemon struct {
 	classifier *classification.Pipeline
 	exporter   *metrics.Exporter
 	store      *state.Store
+	db         *database.DB
 	server     *http.Server
 
 	mu              sync.RWMutex
@@ -117,6 +118,8 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	scanner.SetScoringWeights(scoring.Weights{
 		StarVelocity:      cfg.Scoring.Weights.StarVelocity,
 		StarAcceleration:  cfg.Scoring.Weights.StarAcceleration,
+		ForkVelocity:      cfg.Scoring.Weights.ForkVelocity,
+		ReleaseCadence:    cfg.Scoring.Weights.ReleaseCadence,
 		ContributorGrowth: cfg.Scoring.Weights.ContributorGrowth,
 		PRVelocity:        cfg.Scoring.Weights.PRVelocity,
 		IssueVelocity:     cfg.Scoring.Weights.IssueVelocity,
@@ -157,37 +160,46 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	// Create metrics exporter
 	var exp *metrics.Exporter
 	if !daemonCfg.DryRun {
+		var flushTimeout time.Duration
+		if cfg.Otel.FlushTimeout > 0 {
+			flushTimeout = time.Duration(cfg.Otel.FlushTimeout) * time.Second
+		}
 		exporterCfg := metrics.ExporterConfig{
 			Endpoint:       cfg.Otel.Endpoint,
 			Headers:        cfg.Otel.Headers,
 			ServiceName:    cfg.Otel.ServiceName,
 			ServiceVersion: cfg.Otel.ServiceVersion,
+			FlushTimeout:   flushTimeout,
 		}
 		exp, err = metrics.NewExporter(exporterCfg)
 		if err != nil {
 			return nil, fmt.Errorf("creating metrics exporter: %w", err)
 		}
+		endpoint := cfg.Otel.Endpoint
+		if endpoint == "" {
+			endpoint = "(from OTEL_EXPORTER_OTLP_ENDPOINT env var or default)"
+		}
+		logging.Info("metrics exporter created", "endpoint", endpoint, "service_name", cfg.Otel.ServiceName)
 	}
 
-	// Create classification pipeline if configured
+	// Open database for classification lookups and metric export
+	var classifyDB *database.DB
 	var classifyPipeline *classification.Pipeline
-	if cfg.Classification.OllamaEndpoint != "" && cfg.Classification.Model != "" {
-		classifyDB, err := database.Open("")
-		if err != nil {
-			logging.Warn("could not open database for classification, classification disabled", "error", err)
-		} else {
-			clsCfg := cfg.Classification
-			ollama := classification.NewOllamaClient(
-				clsCfg.OllamaEndpoint,
-				clsCfg.Model,
-				clsCfg.TimeoutMs,
-				clsCfg.Categories,
-			)
-			classifyPipeline = classification.NewPipeline(classifyDB, client, ollama, clsCfg)
-			logging.Info("classification enabled",
-				"model", clsCfg.Model,
-				"endpoint", clsCfg.OllamaEndpoint)
-		}
+	classifyDB, err = database.Open("")
+	if err != nil {
+		logging.Warn("could not open database, classification and DB-based categories disabled", "error", err)
+	} else if cfg.Classification.OllamaEndpoint != "" && cfg.Classification.Model != "" {
+		clsCfg := cfg.Classification
+		ollama := classification.NewOllamaClient(
+			clsCfg.OllamaEndpoint,
+			clsCfg.Model,
+			clsCfg.TimeoutMs,
+			clsCfg.Categories,
+		)
+		classifyPipeline = classification.NewPipeline(classifyDB, client, ollama, clsCfg)
+		logging.Info("classification enabled",
+			"model", clsCfg.Model,
+			"endpoint", clsCfg.OllamaEndpoint)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -201,6 +213,7 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		classifier: classifyPipeline,
 		exporter:   exp,
 		store:      store,
+		db:         classifyDB,
 		status:     StatusIdle,
 		startTime:  time.Now(),
 		ready:      false,
@@ -399,6 +412,9 @@ func (d *Daemon) runScan() {
 		d.runDiscovery()
 	}
 
+	// Sync in-memory store to database so classification and metric export can find repos
+	d.syncStoreToDatabase()
+
 	// Run classification if enabled
 	if d.classifier != nil {
 		d.runClassification()
@@ -470,18 +486,34 @@ func (d *Daemon) runClassification() {
 func (d *Daemon) exportMetrics() {
 	allStates := d.store.AllRepoStates()
 
+	if len(allStates) == 0 {
+		logging.Warn("no repo states to export metrics for")
+		return
+	}
+
 	for fullName, repoState := range allStates {
 		parts := strings.SplitN(fullName, "/", 2)
 		if len(parts) != 2 {
 			continue
 		}
 
-		// Find categories from config
+		// Resolve category: DB classification > config > "default"
 		var categories []string
-		for _, tracked := range d.cfg.Repositories {
-			if tracked.Repo == fullName {
-				categories = tracked.Categories
-				break
+		if d.db != nil {
+			if repo, err := d.db.GetRepo(fullName); err == nil && repo != nil {
+				if repo.ForceCategory != "" {
+					categories = []string{repo.ForceCategory}
+				} else if repo.PrimaryCategory != "" {
+					categories = []string{repo.PrimaryCategory}
+				}
+			}
+		}
+		if len(categories) == 0 {
+			for _, tracked := range d.cfg.Repositories {
+				if tracked.Repo == fullName {
+					categories = tracked.Categories
+					break
+				}
 			}
 		}
 		if len(categories) == 0 {
@@ -510,11 +542,68 @@ func (d *Daemon) exportMetrics() {
 		d.exporter.RecordRepoMetrics(d.ctx, repoMetrics)
 	}
 
+	logging.Info("recorded metrics", "repos", len(allStates))
+
 	// Flush metrics
 	flushCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
 	if err := d.exporter.Flush(flushCtx); err != nil {
-		logging.Warn("metrics flush error", "error", err)
+		logging.Error("metrics flush failed", "error", err)
+	} else {
+		logging.Info("metrics flushed successfully")
+	}
+}
+
+// syncStoreToDatabase syncs repos from the in-memory store to the SQLite database.
+// This ensures the classification pipeline and metric export can find repo records.
+// Only scan-related fields are updated; classification fields are preserved.
+func (d *Daemon) syncStoreToDatabase() {
+	if d.db == nil {
+		return
+	}
+
+	allStates := d.store.AllRepoStates()
+	synced := 0
+	for fullName, rs := range allStates {
+		parts := strings.SplitN(fullName, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		record := &database.RepoRecord{
+			FullName:              fullName,
+			Owner:                 parts[0],
+			Name:                  parts[1],
+			Stars:                 rs.Stars,
+			StarsPrev:             rs.StarsPrev,
+			Forks:                 rs.Forks,
+			Contributors:          rs.Contributors,
+			ContributorsPrev:      rs.ContributorsPrev,
+			GrowthScore:           rs.GrowthScore,
+			NormalizedGrowthScore: rs.NormalizedGrowthScore,
+			StarVelocity:          rs.StarVelocity,
+			StarAcceleration:      rs.StarAcceleration,
+			PRVelocity:            rs.PRVelocity,
+			IssueVelocity:         rs.IssueVelocity,
+			ContributorGrowth:     rs.ContributorGrowth,
+			MergedPRs7d:           rs.MergedPRs7d,
+			NewIssues7d:           rs.NewIssues7d,
+			LastCollectedAt:       rs.LastCollected.Format(time.RFC3339),
+			ETag:                  rs.ETag,
+			LastModified:          rs.LastModified,
+			Status:                "pending",
+			FirstSeenAt:           time.Now().Format(time.RFC3339),
+		}
+
+		if err := d.db.SyncScanData(record); err != nil {
+			logging.Error("failed to sync repo to database", "repo", fullName, "error", err)
+			continue
+		}
+		synced++
+	}
+
+	if synced > 0 {
+		logging.Info("synced repos from store to database", "count", synced)
 	}
 }
 
