@@ -18,6 +18,22 @@ type RepoMetrics struct {
 	Language    string   `json:"language"`
 	Topics      []string `json:"topics"`
 	Description string   `json:"description"`
+
+	// Activity carries the 7-day PR/issue counts, contributor proxy, and
+	// latest release info when populated by the GraphQL bulk-fetch path
+	// (T5b — ISI-765). Nil means activity was not requested or the
+	// GraphQL fragment could not produce a faithful answer (e.g. the
+	// PR/issue node list saturated within the 7-day window). Callers
+	// MUST treat a nil Activity as "not collected" and decide whether to
+	// fall back to the per-repo REST `GetActivityMetrics` path.
+	Activity *ActivityMetrics `json:"activity,omitempty"`
+
+	// ActivityTruncated is true when the GraphQL activity sub-query
+	// returned a full page AND the oldest node still falls inside the
+	// 7-day window — meaning the count is a lower bound and the REST
+	// path should be used for accuracy. Only meaningful when Activity
+	// is non-nil.
+	ActivityTruncated bool `json:"activity_truncated,omitempty"`
 }
 
 // githubRepoResponse represents the GitHub API response for a repository.

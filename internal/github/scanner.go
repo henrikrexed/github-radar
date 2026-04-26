@@ -346,11 +346,17 @@ func (s *Scanner) ScanBulk(ctx context.Context, repos []Repo) (*ScanResult, erro
 			Collected: time.Now(),
 		}
 
-		// Optional activity collection (still REST — GraphQL
-		// equivalents would balloon the query cost beyond the 50-repo
-		// batch budget).
+		// Activity collection (T5b — ISI-765): the GraphQL bulk fetch
+		// now folds in 7-day PR/issue counts, mentionable-user count
+		// (contributor proxy) and latest-release info, so the
+		// per-repo REST fan-out (4 sub-calls) is avoided on hot/warm/
+		// new tiers. Fall back to the REST path only when the
+		// GraphQL activity is absent or was truncated by the 100-node
+		// page cap (very-high-velocity repos like kubernetes/...).
 		if s.collector != nil && s.collector.collectActivity {
-			if activity, err := s.client.GetActivityMetrics(ctx, repo.Owner, repo.Name); err == nil {
+			if metrics.Activity != nil && !metrics.ActivityTruncated {
+				collResult.Activity = metrics.Activity
+			} else if activity, err := s.client.GetActivityMetrics(ctx, repo.Owner, repo.Name); err == nil {
 				collResult.Activity = activity
 			}
 		}
