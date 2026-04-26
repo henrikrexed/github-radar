@@ -1001,4 +1001,3 @@ func TestUpdateClassification_Reclassify(t *testing.T) {
 		t.Errorf("ReadmeHash = %q, want %q", got.ReadmeHash, "newhash")
 	}
 }
-

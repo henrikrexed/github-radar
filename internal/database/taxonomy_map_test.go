@@ -100,10 +100,10 @@ func TestIsAllowedPair(t *testing.T) {
 		want     bool
 	}{
 		{"ai", "agents", true},
-		{"ai", "kubernetes", false},           // wrong domain
+		{"ai", "kubernetes", false}, // wrong domain
 		{"cloud-native", "kubernetes", true},
-		{"other", "other", true},              // refusal sink
-		{"other", "agents", false},            // sink rejects domain subs
+		{"other", "other", true},   // refusal sink
+		{"other", "agents", false}, // sink rejects domain subs
 		{"nonexistent", "anything", false},
 		{"web", "frameworks", true},
 		{"productivity", "general", true},

@@ -281,12 +281,12 @@ func listRepoColumns(tx *sql.Tx) (map[string]struct{}, error) {
 // added to the map, the SQL picks it up automatically.
 //
 // The WHERE clause intentionally does NOT filter on
-// `primary_category_legacy != ''`. Newly-discovered, never-classified rows
-// have `primary_category=''` and therefore land with empty
-// `primary_category_legacy`; the CASE branches' `ELSE 'other'` arms catch
-// them and route them into the (other, other) refusal sink with
-// needs_review=1, matching the architect-approved behavior. Idempotency is
-// preserved by the `primary_subcategory = ''` predicate.
+// primary_category_legacy != "" (empty string). Newly-discovered,
+// never-classified rows have primary_category set to the empty string and
+// therefore land with empty primary_category_legacy; the CASE branches'
+// ELSE 'other' arms catch them and route them into the (other, other) refusal
+// sink with needs_review=1, matching the architect-approved behavior.
+// Idempotency is preserved by the primary_subcategory = "" predicate.
 func buildBackfillSQL() (string, error) {
 	legacyKeys := make([]string, 0, len(LegacyCategoryMap))
 	for k := range LegacyCategoryMap {
