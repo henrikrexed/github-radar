@@ -49,18 +49,18 @@ const (
 
 // AuditOutput is the result of one Run() invocation.
 type AuditOutput struct {
-	Report             Report
-	Filed              []FiledIssue
-	WatchOnly          []ClusterEntry
-	Escalated          bool   // aggregate share > 3.0%
-	AggregateSharePct  float64
+	Report            Report
+	Filed             []FiledIssue
+	WatchOnly         []ClusterEntry
+	Escalated         bool // aggregate share > 3.0%
+	AggregateSharePct float64
 }
 
 // FiledIssue records a successful auto-file POST.
 type FiledIssue struct {
-	Cluster      Cluster
-	Identifier   string // e.g. "ISI-790"
-	Subcategory  string // proposed subcat slug
+	Cluster     Cluster
+	Identifier  string // e.g. "ISI-790"
+	Subcategory string // proposed subcat slug
 }
 
 // ClusterEntry is the watch-list shape: cluster + reason it didn't auto-file.

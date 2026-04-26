@@ -30,10 +30,10 @@ func (s *stubData) ActiveNonCuratedCount(ctx context.Context) (int, error) {
 // stubFiler implements Filer with controllable outcomes for U2/I2/I3/U3
 // + the §6.1 degrade-to-watch tests.
 type stubFiler struct {
-	dedupHits map[string]bool       // titlePrefix → true means "already filed"
-	failOn    map[string]error      // titlePrefix → error to return from File
-	calls     []GraduationDraft     // every File invocation captured
-	dedupCalls []string             // every AlreadyFiledRecently invocation captured
+	dedupHits  map[string]bool   // titlePrefix → true means "already filed"
+	failOn     map[string]error  // titlePrefix → error to return from File
+	calls      []GraduationDraft // every File invocation captured
+	dedupCalls []string          // every AlreadyFiledRecently invocation captured
 }
 
 func (s *stubFiler) AlreadyFiledRecently(ctx context.Context, titlePrefix string) (bool, error) {
@@ -65,7 +65,7 @@ func newCluster(cat, token string, n int, conf float64) []CandidateRepo {
 func TestAudit_U2_WatchVsGraduation(t *testing.T) {
 	data := &stubData{
 		candidates: append(
-			newCluster("ai", "alpha", 4, 0.8), // size 4 → watch
+			newCluster("ai", "alpha", 4, 0.8),         // size 4 → watch
 			newCluster("devtools", "beta", 5, 0.8)..., // size 5, conf 0.8, score 4.0 ≥ 3.0 → file
 		),
 		denom: 200,

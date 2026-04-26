@@ -90,14 +90,14 @@ type Filer interface {
 //
 // Auth is `Authorization: Bearer {APIKey}` on every request.
 type PaperclipFiler struct {
-	BaseURL        string
-	CompanyID      string
-	ProjectID      string
-	APIKey         string
-	AssigneeAgent  string // agent id to assign new graduation issues to
-	HTTP           *http.Client
-	Now            func() time.Time
-	Logger         StructuredLogger // optional; nil-safe
+	BaseURL       string
+	CompanyID     string
+	ProjectID     string
+	APIKey        string
+	AssigneeAgent string // agent id to assign new graduation issues to
+	HTTP          *http.Client
+	Now           func() time.Time
+	Logger        StructuredLogger // optional; nil-safe
 }
 
 // NewPaperclipFiler returns a Filer wired with sane defaults. APIKey
@@ -197,13 +197,13 @@ func (p *PaperclipFiler) AlreadyFiledRecently(ctx context.Context, titlePrefix s
 }
 
 type createIssueRequest struct {
-	Title            string `json:"title"`
-	Description      string `json:"description"`
-	Status           string `json:"status"`
-	Priority         string `json:"priority"`
-	ParentID         string `json:"parentId,omitempty"`
-	ProjectID        string `json:"projectId,omitempty"`
-	AssigneeAgentID  string `json:"assigneeAgentId,omitempty"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	Status          string `json:"status"`
+	Priority        string `json:"priority"`
+	ParentID        string `json:"parentId,omitempty"`
+	ProjectID       string `json:"projectId,omitempty"`
+	AssigneeAgentID string `json:"assigneeAgentId,omitempty"`
 }
 
 type createIssueResponse struct {

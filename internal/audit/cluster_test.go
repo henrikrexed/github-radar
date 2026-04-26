@@ -22,9 +22,9 @@ type fixtureRepo struct {
 }
 
 type fixtureExpected struct {
-	Tokens                 []string `json:"tokens"`
-	RepoCount              int      `json:"repo_count"`
-	QualifiesForAutoFile   bool     `json:"qualifies_for_auto_file"`
+	Tokens               []string `json:"tokens"`
+	RepoCount            int      `json:"repo_count"`
+	QualifiesForAutoFile bool     `json:"qualifies_for_auto_file"`
 }
 
 type clusteringFixture struct {
