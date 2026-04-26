@@ -131,10 +131,7 @@ func (a *Auditor) Run(ctx context.Context, mode Mode, parentIssueID string) (*Au
 	// for the aggregate share above (I4 + U1).
 	repos := make([]Repo, 0, len(candidates))
 	for _, c := range candidates {
-		repos = append(repos, Repo{
-			FullName: c.FullName, PrimaryCategory: c.PrimaryCategory,
-			Topics: c.Topics, Confidence: c.Confidence,
-		})
+		repos = append(repos, Repo(c))
 	}
 	clusters := ClusterRepos(repos)
 

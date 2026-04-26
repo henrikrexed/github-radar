@@ -54,12 +54,7 @@ func loadFixture(t *testing.T, name string) clusteringFixture {
 func toRepos(fr []fixtureRepo) []Repo {
 	out := make([]Repo, 0, len(fr))
 	for _, r := range fr {
-		out = append(out, Repo{
-			FullName:        r.FullName,
-			PrimaryCategory: r.PrimaryCategory,
-			Topics:          r.Topics,
-			Confidence:      r.Confidence,
-		})
+		out = append(out, Repo(r))
 	}
 	return out
 }

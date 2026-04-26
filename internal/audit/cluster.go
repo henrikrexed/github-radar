@@ -167,9 +167,7 @@ func mergeByJaccard(in []Cluster, threshold float64) []Cluster {
 	}
 
 	clusters := make([]Cluster, 0, len(in))
-	for _, c := range in {
-		clusters = append(clusters, c)
-	}
+	clusters = append(clusters, in...)
 
 	// Iterate until no merges happen in a pass.
 	for {
