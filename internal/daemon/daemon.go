@@ -83,6 +83,11 @@ type Daemon struct {
 	startTime       time.Time // instance start time for uptime tracking
 	ready           bool      // true when daemon is fully initialized
 
+	// classificationLastErr captures the most recent ClassifyAll error so the
+	// cycle-summary log line can surface it without forcing operators to grep
+	// scrollback. Empty when the last run succeeded. Guarded by mu (ISI-775).
+	classificationLastErr string
+
 	ctx        context.Context
 	cancel     context.CancelFunc
 	scanMu     sync.Mutex // prevents overlapping scans
@@ -355,6 +360,16 @@ func (d *Daemon) shutdown() error {
 	logging.Info("daemon stopped",
 		"repos_needs_reclassify_total", needsReclassifyTotal,
 	)
+
+	// ISI-775: emit the cycle-summary line on shutdown so the very last log
+	// entry shows the full health snapshot (pending count + last
+	// classification error). `journalctl -u github-radar | tail -1` should
+	// make a silent failure obvious. Intentionally also called at the end of
+	// the last runScan() so a normal shutdown emits two summary lines (the
+	// run-end one and this one); the redundancy is cheap and shutdown is
+	// rare.
+	d.logCycleSummary()
+
 	return nil
 }
 
@@ -482,8 +497,66 @@ func (d *Daemon) runScan() {
 	d.rateLimitRemain = d.client.RateLimitInfo().Remaining
 	d.mu.Unlock()
 
+	// ISI-775: structured cycle-summary log line. The goal is that
+	// `journalctl -u github-radar | tail -1` makes a silent classification
+	// failure obvious — every counter on the row, last error included.
+	d.logCycleSummary()
+
 	// Schedule next scan
 	d.scheduleNextScan()
+}
+
+// logCycleSummary emits a single structured INFO line at the end of every
+// scan cycle (and on shutdown via the same fields) covering all repo-status
+// counters plus the most recent classification error. See ISI-775.
+//
+// The intent: a silent failure (e.g. SQL Scan column-count drift like the
+// 26-hour incident from ISI-714) should surface within one cycle from this
+// line alone, without forcing the operator to grep scrollback. We deliberately
+// emit -1 sentinels when the DB is unavailable so a missing value isn't
+// confused with a true zero.
+func (d *Daemon) logCycleSummary() {
+	reposTotal := -1
+	reposActive := -1
+	reposPending := -1
+	reposNeedsReclassify := -1
+	reposNeedsReview := -1
+	lastClassifiedAt := ""
+
+	if d.db != nil {
+		if statuses, err := d.db.CountByStatus(); err == nil {
+			total := 0
+			for _, n := range statuses {
+				total += n
+			}
+			reposTotal = total
+			reposActive = statuses["active"]
+			reposPending = statuses["pending"]
+			reposNeedsReclassify = statuses["needs_reclassify"]
+			reposNeedsReview = statuses["needs_review"]
+		} else {
+			logging.Warn("cycle summary status count failed", "error", err)
+		}
+		if ts, err := d.db.LastClassifiedAt(); err == nil {
+			lastClassifiedAt = ts
+		} else {
+			logging.Warn("cycle summary last_classified_at failed", "error", err)
+		}
+	}
+
+	d.mu.RLock()
+	classificationLastErr := d.classificationLastErr
+	d.mu.RUnlock()
+
+	logging.Info("cycle summary",
+		"repos_total", reposTotal,
+		"repos_active", reposActive,
+		"repos_pending", reposPending,
+		"repos_needs_reclassify", reposNeedsReclassify,
+		"repos_needs_review", reposNeedsReview,
+		"last_classified_at", lastClassifiedAt,
+		"classification_last_error", classificationLastErr,
+	)
 }
 
 // runDiscovery runs topic-based discovery.
@@ -516,6 +589,32 @@ func (d *Daemon) runClassification() {
 	logging.Info("starting classification scan")
 
 	summary, err := d.classifier.ClassifyAll(d.ctx)
+
+	// Record classification run outcome (ISI-775). A top-level error → "failed";
+	// per-repo failures only → "partial"; otherwise "success". context.Canceled
+	// is shutdown-driven, not a regression — don't taint the failed counter.
+	result := metrics.ClassificationRunSuccess
+	switch {
+	case err != nil && err == context.Canceled:
+		// Skip recording — daemon is shutting down.
+	case err != nil:
+		result = metrics.ClassificationRunFailed
+	case summary != nil && summary.Failed > 0:
+		result = metrics.ClassificationRunPartial
+	}
+
+	d.mu.Lock()
+	if err != nil && err != context.Canceled {
+		d.classificationLastErr = err.Error()
+	} else {
+		d.classificationLastErr = ""
+	}
+	d.mu.Unlock()
+
+	if d.exporter != nil && !(err != nil && err == context.Canceled) {
+		d.exporter.RecordClassificationRun(d.ctx, result)
+	}
+
 	if err != nil && err != context.Canceled {
 		logging.Error("classification failed", "error", err)
 		return
@@ -528,7 +627,8 @@ func (d *Daemon) runClassification() {
 			"needs_review", summary.NeedsReview,
 			"skipped", summary.Skipped,
 			"failed", summary.Failed,
-			"duration", summary.Duration)
+			"duration", summary.Duration,
+			"result", string(result))
 	}
 }
 
@@ -547,14 +647,19 @@ func (d *Daemon) exportMetrics() {
 			continue
 		}
 
-		// Resolve taxonomy: DB classification > config > "default"
+		// Resolve taxonomy: DB classification > config > "default" / "pending".
 		// (ISI-786) — pull the (category, subcategory, legacy) triple via
 		// ResolveTaxonomy so force_* overrides and pre-v3 flat slugs are
 		// collapsed to the v3 (cat, sub) shape with a stable legacy fallback.
+		// (ISI-775) — capture the raw repo status so the no-category fallback
+		// below can surface "pending" separately from "default" instead of
+		// conflating the two and hiding SQL Scan drift like the v3 incident.
 		var categories []string
 		var subcategory, categoryLegacy string
+		repoStatus := ""
 		if d.db != nil {
 			if repo, err := d.db.GetRepo(fullName); err == nil && repo != nil {
+				repoStatus = repo.Status
 				cat, sub, legacy := repo.ResolveTaxonomy()
 				if cat != "" {
 					categories = []string{cat}
@@ -572,7 +677,11 @@ func (d *Daemon) exportMetrics() {
 			}
 		}
 		if len(categories) == 0 {
-			categories = []string{"default"}
+			if repoStatus == "pending" {
+				categories = []string{"pending"}
+			} else {
+				categories = []string{"default"}
+			}
 		}
 
 		repoMetrics := metrics.RepoMetrics{
@@ -605,12 +714,40 @@ func (d *Daemon) exportMetrics() {
 	if d.db != nil {
 		if n, err := d.db.NeedsReclassifyCount(); err == nil {
 			needsReclassifyTotal = n
+		} else {
+			logging.Warn("needs_reclassify count failed", "error", err)
+		}
+	}
+
+	// ISI-775: emit pending-status gauge buckets so the next SQL Scan / pipeline
+	// regression surfaces within one cycle. Tagged by (excluded,
+	// force_category_set) so dashboards can split transient new-discovery state
+	// from genuinely stuck rows. Logged inline as well so a `journalctl |
+	// tail` shows the same number the gauge does.
+	pendingTotalActive := -1
+	if d.db != nil {
+		if buckets, err := d.db.PendingCountsByDimension(); err != nil {
+			logging.Warn("pending count failed", "error", err)
+		} else {
+			metricBuckets := make([]metrics.PendingBucket, 0, len(buckets))
+			for _, b := range buckets {
+				metricBuckets = append(metricBuckets, metrics.PendingBucket{
+					Excluded:         b.Excluded,
+					ForceCategorySet: b.ForceCategorySet,
+					Count:            b.Count,
+				})
+				if !b.Excluded && !b.ForceCategorySet {
+					pendingTotalActive = b.Count
+				}
+			}
+			d.exporter.RecordPendingBuckets(d.ctx, metricBuckets)
 		}
 	}
 
 	logging.Info("recorded metrics",
 		"repos", len(allStates),
 		"repos_needs_reclassify_total", needsReclassifyTotal,
+		"repos_pending_active", pendingTotalActive,
 	)
 
 	// Flush metrics
