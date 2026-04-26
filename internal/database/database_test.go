@@ -278,6 +278,129 @@ func TestReposByCategory(t *testing.T) {
 	}
 }
 
+// TestReposByCategoryPair exercises the v3 (cat, subcat) tuple read path
+// added for ISI-719 T8. The test fixtures simulate the post-v3-migration
+// shape by upserting repos and then setting the new taxonomy columns
+// directly via SQL (RepoRecord.PrimarySubcategory is added by T3 WS2 — until
+// that lands, tests poke the column with a raw UPDATE).
+func TestReposByCategoryPair(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		{FullName: "a/agents", Owner: "a", Name: "agents", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/llm", Owner: "a", Name: "llm", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/agents2", Owner: "a", Name: "agents2", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "k/k", Owner: "k", Name: "k", Status: "pending", PrimaryCategory: "cloud-native"},
+		{FullName: "x/excluded", Owner: "x", Name: "excluded", Status: "pending", PrimaryCategory: "ai", Excluded: 1},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo: %v", err)
+		}
+	}
+
+	// Set primary_subcategory directly (RepoRecord doesn't expose it pre-WS2).
+	subcats := map[string]string{
+		"a/agents":   "agents",
+		"a/llm":      "llm-tooling",
+		"a/agents2":  "agents",
+		"k/k":        "kubernetes",
+		"x/excluded": "agents",
+	}
+	for full, sub := range subcats {
+		if _, err := db.db.Exec(`UPDATE repos SET primary_subcategory = ? WHERE full_name = ?`, sub, full); err != nil {
+			t.Fatalf("set subcategory %s: %v", full, err)
+		}
+	}
+
+	got, err := db.ReposByCategoryPair("ai", "agents")
+	if err != nil {
+		t.Fatalf("ReposByCategoryPair: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ReposByCategoryPair(ai, agents) = %d rows, want 2 (excluded=1 row must be filtered)", len(got))
+	}
+	if got[0].FullName != "a/agents" || got[1].FullName != "a/agents2" {
+		t.Errorf("ReposByCategoryPair returned %v, want [a/agents a/agents2]", []string{got[0].FullName, got[1].FullName})
+	}
+
+	// Empty result is not an error.
+	none, err := db.ReposByCategoryPair("ai", "no-such-subcategory")
+	if err != nil {
+		t.Fatalf("ReposByCategoryPair(empty): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ReposByCategoryPair(ai, no-such-subcategory) = %d, want 0", len(none))
+	}
+
+	// Mismatched cat/sub combination must not match.
+	cross, err := db.ReposByCategoryPair("cloud-native", "agents")
+	if err != nil {
+		t.Fatalf("ReposByCategoryPair(cross): %v", err)
+	}
+	if len(cross) != 0 {
+		t.Errorf("ReposByCategoryPair(cloud-native, agents) = %d, want 0 (cat/sub must match jointly)", len(cross))
+	}
+}
+
+// TestReposByLegacyCategory exercises the repos_legacy_v1 view path for
+// callers that still hold pre-v3 flat category strings. The view exposes
+// primary_category_legacy as legacy_category (see schema_migration.go).
+func TestReposByLegacyCategory(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		{FullName: "a/agents", Owner: "a", Name: "agents", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/llm", Owner: "a", Name: "llm", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/agents2", Owner: "a", Name: "agents2", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "x/excluded", Owner: "x", Name: "excluded", Status: "pending", PrimaryCategory: "ai", Excluded: 1},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo: %v", err)
+		}
+	}
+
+	// Simulate the post-migration state: primary_category_legacy snapshots
+	// the pre-v3 flat value while primary_category holds the new top-level
+	// domain. Set both for each row.
+	legacies := map[string]string{
+		"a/agents":   "ai-agents",
+		"a/llm":      "llm-tooling",
+		"a/agents2":  "ai-agents",
+		"x/excluded": "ai-agents",
+	}
+	for full, legacy := range legacies {
+		if _, err := db.db.Exec(`UPDATE repos SET primary_category_legacy = ?, primary_subcategory = 'placeholder' WHERE full_name = ?`, legacy, full); err != nil {
+			t.Fatalf("set legacy %s: %v", full, err)
+		}
+	}
+
+	got, err := db.ReposByLegacyCategory("ai-agents")
+	if err != nil {
+		t.Fatalf("ReposByLegacyCategory: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ReposByLegacyCategory(ai-agents) = %d rows, want 2 (excluded=1 row must be filtered)", len(got))
+	}
+	if got[0].FullName != "a/agents" || got[1].FullName != "a/agents2" {
+		t.Errorf("ReposByLegacyCategory returned %v, want [a/agents a/agents2]", []string{got[0].FullName, got[1].FullName})
+	}
+	// PrimaryCategory on returned rows holds the *new* top-level value, not the legacy form.
+	if got[0].PrimaryCategory != "ai" {
+		t.Errorf("returned row PrimaryCategory = %q, want %q (top-level, not legacy flat)", got[0].PrimaryCategory, "ai")
+	}
+
+	// Unknown legacy value returns 0 rows, not an error.
+	none, err := db.ReposByLegacyCategory("does-not-exist")
+	if err != nil {
+		t.Fatalf("ReposByLegacyCategory(unknown): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ReposByLegacyCategory(does-not-exist) = %d, want 0", len(none))
+	}
+}
+
 func TestRepoCount(t *testing.T) {
 	db := mustOpen(t)
 
