@@ -118,6 +118,8 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	scanner.SetScoringWeights(scoring.Weights{
 		StarVelocity:      cfg.Scoring.Weights.StarVelocity,
 		StarAcceleration:  cfg.Scoring.Weights.StarAcceleration,
+		ForkVelocity:      cfg.Scoring.Weights.ForkVelocity,
+		ReleaseCadence:    cfg.Scoring.Weights.ReleaseCadence,
 		ContributorGrowth: cfg.Scoring.Weights.ContributorGrowth,
 		PRVelocity:        cfg.Scoring.Weights.PRVelocity,
 		IssueVelocity:     cfg.Scoring.Weights.IssueVelocity,
@@ -158,11 +160,16 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	// Create metrics exporter
 	var exp *metrics.Exporter
 	if !daemonCfg.DryRun {
+		var flushTimeout time.Duration
+		if cfg.Otel.FlushTimeout > 0 {
+			flushTimeout = time.Duration(cfg.Otel.FlushTimeout) * time.Second
+		}
 		exporterCfg := metrics.ExporterConfig{
 			Endpoint:       cfg.Otel.Endpoint,
 			Headers:        cfg.Otel.Headers,
 			ServiceName:    cfg.Otel.ServiceName,
 			ServiceVersion: cfg.Otel.ServiceVersion,
+			FlushTimeout:   flushTimeout,
 		}
 		exp, err = metrics.NewExporter(exporterCfg)
 		if err != nil {
@@ -571,6 +578,8 @@ func (d *Daemon) reloadConfig() {
 	d.scanner.SetScoringWeights(scoring.Weights{
 		StarVelocity:      newCfg.Scoring.Weights.StarVelocity,
 		StarAcceleration:  newCfg.Scoring.Weights.StarAcceleration,
+		ForkVelocity:      newCfg.Scoring.Weights.ForkVelocity,
+		ReleaseCadence:    newCfg.Scoring.Weights.ReleaseCadence,
 		ContributorGrowth: newCfg.Scoring.Weights.ContributorGrowth,
 		PRVelocity:        newCfg.Scoring.Weights.PRVelocity,
 		IssueVelocity:     newCfg.Scoring.Weights.IssueVelocity,

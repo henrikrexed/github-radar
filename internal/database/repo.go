@@ -180,6 +180,72 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 	return nil
 }
 
+// SyncScanData inserts a new repo or updates only scan-related fields for an existing one.
+// Classification fields (primary_category, category_confidence, readme_hash, etc.) are preserved.
+func (d *DB) SyncScanData(r *RepoRecord) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.db.Exec(`
+		INSERT INTO repos (
+			full_name, owner, name, language, description,
+			stars, stars_prev, forks, open_issues, open_prs,
+			contributors, contributors_prev,
+			growth_score, normalized_growth_score,
+			star_velocity, star_acceleration,
+			pr_velocity, issue_velocity, contributor_growth,
+			merged_prs_7d, new_issues_7d,
+			latest_release, latest_release_date,
+			created_at, first_seen_at, last_collected_at,
+			topics, status, etag, last_modified
+		) VALUES (
+			?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?,
+			?, ?,
+			?, ?,
+			?, ?,
+			?, ?, ?,
+			?, ?,
+			?, ?,
+			?, ?, ?,
+			?, ?, ?, ?
+		) ON CONFLICT(full_name) DO UPDATE SET
+			stars = excluded.stars,
+			stars_prev = excluded.stars_prev,
+			forks = excluded.forks,
+			open_issues = excluded.open_issues,
+			open_prs = excluded.open_prs,
+			contributors = excluded.contributors,
+			contributors_prev = excluded.contributors_prev,
+			growth_score = excluded.growth_score,
+			normalized_growth_score = excluded.normalized_growth_score,
+			star_velocity = excluded.star_velocity,
+			star_acceleration = excluded.star_acceleration,
+			pr_velocity = excluded.pr_velocity,
+			issue_velocity = excluded.issue_velocity,
+			contributor_growth = excluded.contributor_growth,
+			merged_prs_7d = excluded.merged_prs_7d,
+			new_issues_7d = excluded.new_issues_7d,
+			last_collected_at = excluded.last_collected_at,
+			etag = excluded.etag,
+			last_modified = excluded.last_modified`,
+		r.FullName, r.Owner, r.Name, r.Language, r.Description,
+		r.Stars, r.StarsPrev, r.Forks, r.OpenIssues, r.OpenPRs,
+		r.Contributors, r.ContributorsPrev,
+		r.GrowthScore, r.NormalizedGrowthScore,
+		r.StarVelocity, r.StarAcceleration,
+		r.PRVelocity, r.IssueVelocity, r.ContributorGrowth,
+		r.MergedPRs7d, r.NewIssues7d,
+		r.LatestRelease, r.LatestReleaseDate,
+		r.CreatedAt, r.FirstSeenAt, r.LastCollectedAt,
+		r.Topics, r.Status, r.ETag, r.LastModified,
+	)
+	if err != nil {
+		return fmt.Errorf("syncing scan data for %s: %w", r.FullName, err)
+	}
+	return nil
+}
+
 // DeleteRepo removes a repository by full_name.
 func (d *DB) DeleteRepo(fullName string) error {
 	d.mu.Lock()

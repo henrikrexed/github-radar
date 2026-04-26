@@ -43,13 +43,21 @@ type RepoState struct {
 	Stars            int       `json:"stars"`
 	StarsPrev        int       `json:"stars_prev"`
 	Forks            int       `json:"forks"`
+	ForksPrev        int       `json:"forks_prev"`
 	Contributors     int       `json:"contributors"`
 	ContributorsPrev int       `json:"contributors_prev"`
 	LastCollected    time.Time `json:"last_collected"`
 
+	// Release tracking — latest release timestamp observed plus a bounded
+	// history (newest first, max 10) used to derive release cadence.
+	LatestReleaseAt    time.Time   `json:"latest_release_at,omitempty"`
+	RecentReleaseDates []time.Time `json:"recent_release_dates,omitempty"`
+
 	// Velocity metrics
 	StarVelocity      float64 `json:"star_velocity"`
 	StarAcceleration  float64 `json:"star_acceleration"`
+	ForkVelocity      float64 `json:"fork_velocity"`
+	ReleaseCadence    float64 `json:"release_cadence"`
 	PRVelocity        float64 `json:"pr_velocity"`
 	IssueVelocity     float64 `json:"issue_velocity"`
 	ContributorGrowth float64 `json:"contributor_growth"`

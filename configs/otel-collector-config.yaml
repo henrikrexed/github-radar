@@ -1,0 +1,29 @@
+# OpenTelemetry Collector configuration for GitHub Radar
+# Pipeline: github-radar (OTLP/HTTP) → collector → Dynatrace (OTLP/HTTP)
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+exporters:
+  otlphttp/dynatrace:
+    endpoint: ${DT_OTLP_ENDPOINT}
+    headers:
+      Authorization: "Api-Token ${DT_API_TOKEN}"
+
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/dynatrace, debug]

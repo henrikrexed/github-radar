@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hrexed/github-radar/internal/logging"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -146,6 +148,12 @@ func NewExporterForTest(reader sdkmetric.Reader, serviceName string) (*Exporter,
 func (e *Exporter) init() error {
 	ctx := context.Background()
 
+	// Route OTel SDK errors through the app's logging so export
+	// failures are visible instead of silently going to stderr.
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logging.Error("otel sdk error", "error", err)
+	}))
+
 	// Build resource with semantic conventions
 	res := resource.NewWithAttributes(
 		semconv.SchemaURL,
@@ -154,8 +162,9 @@ func (e *Exporter) init() error {
 	)
 
 	// Create OTLP HTTP exporter options
-	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpointURL(e.config.Endpoint),
+	var opts []otlpmetrichttp.Option
+	if e.config.Endpoint != "" {
+		opts = append(opts, otlpmetrichttp.WithEndpointURL(e.config.Endpoint))
 	}
 
 	// Add custom headers if provided

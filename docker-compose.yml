@@ -8,6 +8,9 @@ services:
     image: github-radar:latest
     container_name: github-radar
     restart: unless-stopped
+    depends_on:
+      otel-collector:
+        condition: service_started
     ports:
       - "8080:8080"
     volumes:
@@ -15,7 +18,6 @@ services:
       - github-radar-data:/data
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - OTEL_ENDPOINT=${OTEL_ENDPOINT:-http://localhost:4318}
       - DT_API_TOKEN=${DT_API_TOKEN:-}
     command:
       - serve
@@ -38,6 +40,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    restart: unless-stopped
+    ports:
+      - "4318:4318"
+    volumes:
+      - ./configs/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      - DT_OTLP_ENDPOINT=${DT_OTLP_ENDPOINT}
+      - DT_API_TOKEN=${DT_API_TOKEN:-}
 
 volumes:
   github-radar-data:
