@@ -74,12 +74,12 @@ type Exporter struct {
 	contributorGrowthGauge metric.Float64Gauge
 
 	// GitHub API budget instruments (T5 / ISI-716)
-	apiRateLimitGauge      metric.Int64Gauge
-	apiRateRemainingGauge  metric.Int64Gauge
-	apiRateUsedRatioGauge  metric.Float64Gauge
-	apiRateResetSecsGauge  metric.Int64Gauge
-	apiCallsCounter        metric.Int64Counter
-	refreshTierReposGauge  metric.Int64Gauge
+	apiRateLimitGauge     metric.Int64Gauge
+	apiRateRemainingGauge metric.Int64Gauge
+	apiRateUsedRatioGauge metric.Float64Gauge
+	apiRateResetSecsGauge metric.Int64Gauge
+	apiCallsCounter       metric.Int64Counter
+	refreshTierReposGauge metric.Int64Gauge
 }
 
 // NewExporter creates a new metrics exporter.
@@ -102,6 +102,43 @@ func NewExporter(config ExporterConfig) (*Exporter, error) {
 		return nil, err
 	}
 
+	return e, nil
+}
+
+// NewExporterForTest constructs an exporter wired to a caller-provided
+// reader (typically a sdkmetric.ManualReader). This lets in-process
+// tests scrape counters synchronously without standing up an OTLP
+// receiver. The exporter is otherwise identical to one built by
+// NewExporter — same instruments, same recording semantics.
+func NewExporterForTest(reader sdkmetric.Reader, serviceName string) (*Exporter, error) {
+	if serviceName == "" {
+		serviceName = "github-radar-test"
+	}
+	e := &Exporter{
+		config: ExporterConfig{
+			ServiceName:    serviceName,
+			ServiceVersion: Version,
+			FlushTimeout:   DefaultFlushTimeout,
+			DryRun:         true,
+		},
+	}
+
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(serviceName),
+		semconv.ServiceVersion(Version),
+	)
+	e.meterProvider = sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(res),
+		sdkmetric.WithReader(reader),
+	)
+	e.shutdownFuncs = append(e.shutdownFuncs, e.meterProvider.Shutdown)
+	e.meter = e.meterProvider.Meter("github-radar",
+		metric.WithInstrumentationVersion(Version),
+	)
+	if err := e.createInstruments(); err != nil {
+		return nil, fmt.Errorf("creating instruments: %w", err)
+	}
 	return e, nil
 }
 

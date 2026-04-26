@@ -75,11 +75,11 @@ type TierCandidate struct {
 
 // TierAssignment is the output of ClassifyTier for one repo.
 type TierAssignment struct {
-	FullName  string
-	Tier      RefreshTier
-	Interval  time.Duration
-	DueAt     time.Time // LastCollectedAt + Interval (or zero-time if never collected)
-	IsDue     bool      // DueAt <= now
+	FullName string
+	Tier     RefreshTier
+	Interval time.Duration
+	DueAt    time.Time // LastCollectedAt + Interval (or zero-time if never collected)
+	IsDue    bool      // DueAt <= now
 }
 
 // ClassifyAll assigns every candidate to a tier using the configured

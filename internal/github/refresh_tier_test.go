@@ -82,9 +82,9 @@ func TestDueRepos_Filtering(t *testing.T) {
 	now := time.Now()
 
 	assignments := ClassifyAll([]TierCandidate{
-		{FullName: "due", GrowthScore: 100, LastCollectedAt: now.Add(-2 * time.Hour)}, // hot, due
+		{FullName: "due", GrowthScore: 100, LastCollectedAt: now.Add(-2 * time.Hour)},      // hot, due
 		{FullName: "notdue", GrowthScore: 99, LastCollectedAt: now.Add(-30 * time.Minute)}, // hot, not due
-		{FullName: "never", GrowthScore: 1}, // never collected, due
+		{FullName: "never", GrowthScore: 1},                                                // never collected, due
 	}, now, cfg)
 
 	due := DueRepos(assignments)
