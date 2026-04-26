@@ -1,0 +1,14 @@
+{
+  "name": "score_below_threshold",
+  "description": "Cluster of 5 repos with avg confidence 0.50 — score = 5 × 0.50 = 2.50 < 3.0. Cluster is emitted but does NOT qualify for auto-file (Watch list only).",
+  "input": [
+    {"full_name": "alice/aaa", "primary_category": "ai", "topics": ["alpha"], "confidence": 0.50},
+    {"full_name": "bob/bbb",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.50},
+    {"full_name": "carol/ccc", "primary_category": "ai", "topics": ["alpha"], "confidence": 0.50},
+    {"full_name": "dan/ddd",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.50},
+    {"full_name": "eve/eee",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.50}
+  ],
+  "expected_clusters": [
+    {"tokens": ["alpha"], "repo_count": 5, "qualifies_for_auto_file": false}
+  ]
+}
