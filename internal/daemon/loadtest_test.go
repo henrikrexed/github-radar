@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -404,6 +405,99 @@ func (h *harness) callsByResource(counts map[string]int64, resource string) int6
 	return sum
 }
 
+// tierGaugeByTier scrapes the in-process ManualReader and returns the
+// most recent `github.api.refresh_tier.repos` gauge readings keyed by
+// tier label (`hot`, `warm`, `cold`, `new`). Missing tiers are zero.
+func (h *harness) tierGaugeByTier() map[string]int64 {
+	rm := metricdata.ResourceMetrics{}
+	if err := h.reader.Collect(context.Background(), &rm); err != nil {
+		h.t.Fatalf("reader.Collect: %v", err)
+	}
+	out := map[string]int64{"hot": 0, "warm": 0, "cold": 0, "new": 0}
+	for _, scope := range rm.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if m.Name != "github.api.refresh_tier.repos" {
+				continue
+			}
+			gauge, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				continue
+			}
+			for _, dp := range gauge.DataPoints {
+				iter := dp.Attributes.Iter()
+				for iter.Next() {
+					kv := iter.Attribute()
+					if kv.Key == "tier" {
+						out[kv.Value.AsString()] = dp.Value
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// snapshotCandidates returns a defensive copy of h.candidates so the
+// caller can run ClassifyAll without racing against in-flight ticks.
+func (h *harness) snapshotCandidates() []github.TierCandidate {
+	h.candidateMu.Lock()
+	defer h.candidateMu.Unlock()
+	out := make([]github.TierCandidate, len(h.candidates))
+	copy(out, h.candidates)
+	return out
+}
+
+// publishTierHist emits the `github.api.refresh_tier.repos` gauge per
+// tier, mirroring what `Daemon.publishTierHistogram` does in production.
+func (h *harness) publishTierHist(hist github.TierHistogram) {
+	h.exporter.RecordRefreshTierHistogram(context.Background(), map[string]int{
+		"hot":  hist.Hot,
+		"warm": hist.Warm,
+		"cold": hist.Cold,
+		"new":  hist.New,
+	})
+}
+
+// AddRepos injects the given fixture rows into the harness as
+// freshly-discovered repos. Every injected row gets its `FirstSeenAt`
+// stamped to the current simulated clock and `LastCollectedAt` left
+// zero, so the tier classifier's new-repo override fires unconditionally
+// on the next pass and the dispatcher treats them as due immediately.
+//
+// This bypasses `discovery.Discoverer` entirely — it is the L4 inject
+// point per [load-test plan r4 §Method](/ISI/issues/ISI-716#document-load-test-plan).
+func (h *harness) AddRepos(rows []fixtureRow) {
+	now := h.clock.Now()
+	h.candidateMu.Lock()
+	defer h.candidateMu.Unlock()
+	for _, row := range rows {
+		owner, name := splitFullName(row.FullName)
+		h.repos = append(h.repos, github.Repo{Owner: owner, Name: name})
+		h.candidates = append(h.candidates, github.TierCandidate{
+			FullName:    row.FullName,
+			GrowthScore: row.GrowthScore,
+			FirstSeenAt: now,
+			// LastCollectedAt left zero -> IsDue on the next classifier pass.
+		})
+	}
+}
+
+// generateBurstRows produces n synthetic fixture rows under a unique
+// owner namespace so they do not collide with the 3,000-repo seed
+// fixture. GrowthScore is small (rank-tail) so the burst depends on the
+// new-repo override, not the rank-based hot/warm tier, to land in
+// TierNew. The L4 assertion validates that override, not rank.
+func generateBurstRows(n int, prefix string) []fixtureRow {
+	out := make([]fixtureRow, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, fixtureRow{
+			FullName:    prefix + "/burst-" + strconv.Itoa(i),
+			GrowthScore: 0.1, // intentionally low; the override decides the tier.
+		})
+	}
+	return out
+}
+
 func splitFullName(fn string) (owner, name string) {
 	for i := 0; i < len(fn); i++ {
 		if fn[i] == '/' {
@@ -439,7 +533,7 @@ func TestTieredRefresh_Budget(t *testing.T) {
 		caseL3(t, fixture)
 	})
 	t.Run("L4_DiscoveryBurst", func(t *testing.T) {
-		t.Skip("L4 deferred — orthogonal to L1/L2 budget verification; needs a discovery-trigger inject point in the harness")
+		caseL4(t, fixture)
 	})
 	t.Run("L5a_PrimaryRateLimit", func(t *testing.T) {
 		caseL5a(t, fixture)
@@ -635,6 +729,138 @@ func caseL3(t *testing.T, fixture []fixtureRow) {
 	}
 	if c2Ok != 0 {
 		t.Errorf("L3 cycle2 fresh repo|ok=%d, want 0 (every cold repo should 304)", c2Ok)
+	}
+}
+
+// caseL4 — discovery burst. Mid-run, the harness injects 500 freshly-
+// discovered repos via [harness.AddRepos]; the tier classifier's
+// new-repo override must fire on the very next pass so the burst is
+// dispatched on the new-tier cadence (1h) rather than waiting for the
+// next steady-state cycle. Combined budget across the burst hour must
+// stay ≤ 3,000 calls/hr, and the burst slice must NOT be re-fetched on
+// the immediately-following tick (no double-fetch).
+//
+// Per [load-test plan r4 §Method](/ISI/issues/ISI-716#document-load-test-plan)
+// the inject point is the in-harness [harness.AddRepos] helper — no
+// `discovery.Discoverer` wiring is needed because the L4 acceptance is
+// about the classifier+dispatcher behaviour at the boundary the daemon
+// hot path actually exercises (a populated candidate list from
+// `Daemon.buildTierCandidates`).
+func caseL4(t *testing.T, fixture []fixtureRow) {
+	tierCfg := github.DefaultTierConfig()
+	h := newHarness(t, ghstub.Config{}, fixture, tierCfg)
+	h.preWarmLastCollected()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// 30-min steady-state baseline so cadence is in effect when the burst hits.
+	h.runFor(ctx, 30*time.Minute, 10*time.Minute)
+	baselineCounts := h.callCounts()
+	baselineTotal := h.totalCalls(baselineCounts)
+	baselineActivity := h.callsByResource(baselineCounts, "activity")
+
+	// Snapshot tier histogram pre-burst and publish the gauge so the
+	// post-burst scrape has a baseline to delta against.
+	preCands := h.snapshotCandidates()
+	preHist := github.Count(github.ClassifyAll(preCands, h.clock.Now(), tierCfg))
+	h.publishTierHist(preHist)
+	preGauge := h.tierGaugeByTier()
+
+	// Inject 500 newly-discovered repos. Per the plan helper contract,
+	// FirstSeenAt is stamped to the simulated clock and LastCollectedAt
+	// is left zero so the override fires AND the dispatcher sees them
+	// as immediately due.
+	const burstSize = 500
+	burst := generateBurstRows(burstSize, "burst-owner")
+	burstNames := make(map[string]struct{}, burstSize)
+	for _, r := range burst {
+		burstNames[r.FullName] = struct{}{}
+	}
+	h.AddRepos(burst)
+
+	// One classifier pass: every burst repo must land in TierNew via the
+	// override (FirstSeenAt = now, NewRepoWindow=48h).
+	postCands := h.snapshotCandidates()
+	if got := len(postCands); got != len(preCands)+burstSize {
+		t.Fatalf("L4 candidate count after AddRepos = %d, want %d", got, len(preCands)+burstSize)
+	}
+	postAssign := github.ClassifyAll(postCands, h.clock.Now(), tierCfg)
+	postHist := github.Count(postAssign)
+	h.publishTierHist(postHist)
+
+	// Gate (a): tier histogram delta `new` = +burstSize.
+	if delta := postHist.New - preHist.New; delta != burstSize {
+		t.Errorf("L4 tier-histogram new delta = %d, want +%d (override didn't fire on burst)",
+			delta, burstSize)
+	}
+	// Gate (a, observability path): the OTel gauge sees the same delta.
+	postGauge := h.tierGaugeByTier()
+	if delta := postGauge["new"] - preGauge["new"]; delta != burstSize {
+		t.Errorf("L4 refresh_tier.repos{tier=new} gauge delta = %d, want +%d", delta, burstSize)
+	}
+
+	// Cross-check: every burst repo's assignment is TierNew.
+	burstSeen := 0
+	for _, a := range postAssign {
+		if _, ok := burstNames[a.FullName]; !ok {
+			continue
+		}
+		burstSeen++
+		if a.Tier != github.TierNew {
+			t.Errorf("L4 burst repo %s classified as %s, want new", a.FullName, a.Tier)
+		}
+		if !a.IsDue {
+			t.Errorf("L4 burst repo %s IsDue=false, want true (LastCollectedAt zero)", a.FullName)
+		}
+	}
+	if burstSeen != burstSize {
+		t.Errorf("L4 found %d burst repos in assignments, want %d", burstSeen, burstSize)
+	}
+
+	// Tick at the burst instant: the burst repos are due (LastCollectedAt zero).
+	// Activity collection is one logical call per burst repo.
+	h.tick(ctx)
+	afterBurstTick := h.callCounts()
+	burstTickActivity := h.callsByResource(afterBurstTick, "activity") - baselineActivity
+	t.Logf("L4 burst tick: activity delta=%d (expected ≈ %d burst + steady-state hot/warm/new)",
+		burstTickActivity, burstSize)
+
+	if burstTickActivity < burstSize {
+		t.Errorf("L4 burst tick activity delta = %d, want ≥ %d (burst should be collected this tick)",
+			burstTickActivity, burstSize)
+	}
+
+	// Gate (c): no double-fetch. Advance the simulated clock by one
+	// tick-interval (10 min); the burst's NewInterval is 1h, so the
+	// burst slice MUST NOT be fetched again. Activity delta on the
+	// next tick should be small (just steady-state cadence) — far
+	// below burstSize, which is the regression signature.
+	h.clock.Advance(10 * time.Minute)
+	h.tick(ctx)
+	afterSecondTick := h.callCounts()
+	secondTickActivity := h.callsByResource(afterSecondTick, "activity") -
+		h.callsByResource(afterBurstTick, "activity")
+	t.Logf("L4 second tick: activity delta=%d (expected ≪ %d; no burst re-fetch)",
+		secondTickActivity, burstSize)
+
+	if secondTickActivity >= burstSize {
+		t.Errorf("L4 next-tick activity delta = %d ≥ %d (burst slice was re-fetched within NewInterval — double-fetch regression)",
+			secondTickActivity, burstSize)
+	}
+
+	// Gate (b): combined budget across the burst hour ≤ 3,000 calls/hr.
+	// Continue to t = 1h post-baseline so the assertion is end-to-end.
+	// We've already advanced 10 min for the burst-then-next-tick pair;
+	// run the remaining 20 min to fill the hour.
+	h.runFor(ctx, 20*time.Minute, 10*time.Minute)
+	finalCounts := h.callCounts()
+	burstHourTotal := h.totalCalls(finalCounts) - baselineTotal
+	t.Logf("L4 burst-hour totals: total=%d (gate ≤3000)  by_resource_full=%v",
+		burstHourTotal, finalCounts)
+
+	if burstHourTotal > 3000 {
+		t.Errorf("L4 burst-hour calls = %d > gate 3000", burstHourTotal)
 	}
 }
 
