@@ -200,6 +200,93 @@ func TestMetricUnits_NoInvalidCharacters(t *testing.T) {
 	}
 }
 
+// TestClassificationHealthInstruments asserts the ISI-775 instruments are
+// registered on every exporter — a future caller hitting RecordPendingBuckets
+// or RecordClassificationRun before NewExporter would otherwise nil-panic
+// silently in production. The previous incident (ISI-714 SQL Scan drift)
+// went silent for 26h precisely because no one had a regression-guard test
+// on the observability code path.
+func TestClassificationHealthInstruments(t *testing.T) {
+	cfg := ExporterConfig{
+		Endpoint:    "http://localhost:4318",
+		ServiceName: "test-service",
+		DryRun:      true,
+	}
+
+	exp, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter error: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	if exp.reposPendingGauge == nil {
+		t.Error("reposPendingGauge is nil — radar.repos.pending instrument was not created")
+	}
+	if exp.classificationRunCount == nil {
+		t.Error("classificationRunCount is nil — radar.classification.run instrument was not created")
+	}
+}
+
+// TestRecordPendingBuckets verifies the gauge accepts every (excluded,
+// force_category_set) tuple without panicking — the daemon emits all four
+// every flush even when buckets are zero.
+func TestRecordPendingBuckets(t *testing.T) {
+	cfg := ExporterConfig{
+		Endpoint:    "http://localhost:4318",
+		ServiceName: "test-service",
+		DryRun:      true,
+	}
+
+	exp, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter error: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	ctx := context.Background()
+	exp.RecordPendingBuckets(ctx, []PendingBucket{
+		{Excluded: false, ForceCategorySet: false, Count: 12},
+		{Excluded: false, ForceCategorySet: true, Count: 3},
+		{Excluded: true, ForceCategorySet: false, Count: 0},
+		{Excluded: true, ForceCategorySet: true, Count: 0},
+	})
+
+	// Flush must succeed even when one or more buckets are zero — the gauge
+	// is recorded for stable shape, not just non-zero values.
+	if err := exp.Flush(ctx); err != nil {
+		t.Errorf("Flush error: %v", err)
+	}
+}
+
+// TestRecordClassificationRun covers all three result attributes the daemon
+// can emit (success / failed / partial). Each must Add(1) without error.
+func TestRecordClassificationRun(t *testing.T) {
+	cfg := ExporterConfig{
+		Endpoint:    "http://localhost:4318",
+		ServiceName: "test-service",
+		DryRun:      true,
+	}
+
+	exp, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter error: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	ctx := context.Background()
+	for _, result := range []ClassificationRunResult{
+		ClassificationRunSuccess,
+		ClassificationRunFailed,
+		ClassificationRunPartial,
+	} {
+		exp.RecordClassificationRun(ctx, result)
+	}
+
+	if err := exp.Flush(ctx); err != nil {
+		t.Errorf("Flush error: %v", err)
+	}
+}
+
 func TestExporter_Meter(t *testing.T) {
 	cfg := ExporterConfig{
 		Endpoint:    "http://localhost:4318",

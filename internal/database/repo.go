@@ -528,6 +528,126 @@ func (d *DB) MarkAllNeedsReclassify() (int64, error) {
 	return result.RowsAffected()
 }
 
+// CountByStatus returns counts grouped by status for non-excluded repos. The
+// keys are the raw status strings (e.g. "active", "pending", "needs_review",
+// "needs_reclassify"). Statuses with zero rows are not present in the map.
+//
+// Surfaced on the daemon cycle-summary log line and the OTel pending gauge so
+// a future SQL Scan / classification regression shows up within one cycle
+// instead of going silent for 26h+ (ISI-775).
+func (d *DB) CountByStatus() (map[string]int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(
+		`SELECT status, COUNT(*) FROM repos WHERE excluded = 0 GROUP BY status`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("counting repos by status: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, fmt.Errorf("scanning status row: %w", err)
+		}
+		out[status] = n
+	}
+	return out, rows.Err()
+}
+
+// PendingBreakdown is one bucket of the pending-status gauge, split by the
+// two dimensions that matter operationally: whether the row is excluded
+// (excluded=1 rows are skipped by the classifier and so genuinely "pending"
+// is meaningful only for excluded=0), and whether a force_category override
+// is configured (force_category_set rows are config-managed and should drain
+// the moment the next classification cycle picks them up — they're transient
+// new-discovery state, not stuck rows).
+//
+// Operators care about the (Excluded=false, ForceCategorySet=false) bucket:
+// >5 for >24h means classification is not draining and something is wrong.
+type PendingBreakdown struct {
+	Excluded         bool
+	ForceCategorySet bool
+	Count            int
+}
+
+// PendingCountsByDimension returns pending repo counts split by the
+// (excluded, force_category_set) tuple. Used by the OTel `radar.repos.pending`
+// gauge so dashboards can split transient new-discovery state from genuinely
+// stuck rows (ISI-775).
+//
+// All four dimension tuples are returned even when the count is zero so the
+// downstream gauge shape is stable.
+func (d *DB) PendingCountsByDimension() ([]PendingBreakdown, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT excluded, CASE WHEN force_category != '' THEN 1 ELSE 0 END AS force_set, COUNT(*)
+		FROM repos
+		WHERE status = 'pending'
+		GROUP BY excluded, force_set`)
+	if err != nil {
+		return nil, fmt.Errorf("counting pending repos by dimension: %w", err)
+	}
+	defer rows.Close()
+
+	type key struct {
+		excluded bool
+		forceSet bool
+	}
+	counts := make(map[key]int, 4)
+	for rows.Next() {
+		var excluded, forceSet int
+		var n int
+		if err := rows.Scan(&excluded, &forceSet, &n); err != nil {
+			return nil, fmt.Errorf("scanning pending row: %w", err)
+		}
+		counts[key{excluded == 1, forceSet == 1}] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]PendingBreakdown, 0, 4)
+	for _, excluded := range []bool{false, true} {
+		for _, forceSet := range []bool{false, true} {
+			out = append(out, PendingBreakdown{
+				Excluded:         excluded,
+				ForceCategorySet: forceSet,
+				Count:            counts[key{excluded, forceSet}],
+			})
+		}
+	}
+	return out, nil
+}
+
+// LastClassifiedAt returns the most recent classified_at timestamp across
+// non-excluded repos as a string in the same format used in the column
+// (datetime('now') / RFC3339-ish). Returns the empty string when no repo has
+// been classified yet. Surfaced on the cycle-summary log line so operators
+// can see when classification has stopped advancing (ISI-775).
+func (d *DB) LastClassifiedAt() (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var ts sql.NullString
+	err := d.db.QueryRow(
+		`SELECT MAX(classified_at) FROM repos WHERE excluded = 0 AND classified_at != ''`,
+	).Scan(&ts)
+	if err != nil {
+		return "", fmt.Errorf("max(classified_at): %w", err)
+	}
+	if !ts.Valid {
+		return "", nil
+	}
+	return ts.String, nil
+}
+
 // Metadata operations
 
 // GetMetadata returns a metadata value by key.

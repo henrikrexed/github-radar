@@ -74,6 +74,10 @@ type Exporter struct {
 	prVelocityGauge        metric.Float64Gauge
 	issueVelocityGauge     metric.Float64Gauge
 	contributorGrowthGauge metric.Float64Gauge
+
+	// Classification health instruments (ISI-775).
+	reposPendingGauge      metric.Int64Gauge
+	classificationRunCount metric.Int64Counter
 }
 
 // NewExporter creates a new metrics exporter.
@@ -270,6 +274,25 @@ func (e *Exporter) createInstruments() error {
 		return err
 	}
 
+	// Classification health instruments (ISI-775). Surfaces pending-status
+	// repos and classification-run outcomes so a future SQL Scan / pipeline
+	// regression shows up within one cycle instead of going silent.
+	e.reposPendingGauge, err = e.meter.Int64Gauge("radar.repos.pending",
+		metric.WithDescription("Number of repos in status='pending', tagged by excluded and force_category_set"),
+		metric.WithUnit("{repos}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.classificationRunCount, err = e.meter.Int64Counter("radar.classification.run",
+		metric.WithDescription("Classification cycles completed, tagged by result (success|failed|partial)"),
+		metric.WithUnit("{runs}"),
+	)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -339,6 +362,55 @@ func (e *Exporter) RecordRepoMetrics(ctx context.Context, m RepoMetrics) {
 	e.prVelocityGauge.Record(ctx, m.PRVelocity, attrSet)
 	e.issueVelocityGauge.Record(ctx, m.IssueVelocity, attrSet)
 	e.contributorGrowthGauge.Record(ctx, m.ContributorGrowth, attrSet)
+}
+
+// PendingBucket is one (excluded, force_category_set, count) tuple for the
+// `radar.repos.pending` gauge. Mirrors database.PendingBreakdown but lives in
+// the metrics package so the daemon doesn't have to leak DB types into its
+// metric-recording path.
+type PendingBucket struct {
+	Excluded         bool
+	ForceCategorySet bool
+	Count            int
+}
+
+// RecordPendingBuckets records the `radar.repos.pending` gauge for each
+// (excluded, force_category_set) bucket. Always emit all four buckets — even
+// the zero ones — so dashboards see a stable shape and missing dimensions are
+// obvious instead of being silently dropped from queries.
+func (e *Exporter) RecordPendingBuckets(ctx context.Context, buckets []PendingBucket) {
+	for _, b := range buckets {
+		e.reposPendingGauge.Record(ctx, int64(b.Count),
+			metric.WithAttributes(
+				attribute.Bool("excluded", b.Excluded),
+				attribute.Bool("force_category_set", b.ForceCategorySet),
+			),
+		)
+	}
+}
+
+// ClassificationRunResult enumerates the outcome attribute on
+// `radar.classification.run`. Kept in the metrics package so callers don't
+// pass arbitrary strings.
+type ClassificationRunResult string
+
+const (
+	// ClassificationRunSuccess: ClassifyAll returned no error and Summary.Failed==0.
+	ClassificationRunSuccess ClassificationRunResult = "success"
+	// ClassificationRunFailed: ClassifyAll itself returned an error (e.g. SQL
+	// Scan column-count drift, DB connection lost) — no rows were classified.
+	ClassificationRunFailed ClassificationRunResult = "failed"
+	// ClassificationRunPartial: ClassifyAll returned no top-level error but
+	// Summary.Failed>0 (per-repo failures during the batch).
+	ClassificationRunPartial ClassificationRunResult = "partial"
+)
+
+// RecordClassificationRun increments the classification-run counter with the
+// given outcome attribute. Called once per `runClassification` cycle.
+func (e *Exporter) RecordClassificationRun(ctx context.Context, result ClassificationRunResult) {
+	e.classificationRunCount.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("result", string(result))),
+	)
 }
 
 // Flush forces an immediate export of all pending metrics.
