@@ -328,7 +328,23 @@ func (d *Daemon) shutdown() error {
 		logging.Warn("state save error", "error", err)
 	}
 
-	logging.Info("daemon stopped")
+	// ISI-773 regression guard: surface the needs_reclassify backlog on the
+	// daemon's final log line so operators see drift the moment the scanner
+	// stops. A non-zero number larger than ~50 for >24h is the early signal
+	// that some bulk MarkAllNeedsReclassify-style operation needs a drain
+	// pass (`github-radar admin drain-needs-reclassify`).
+	needsReclassifyTotal := -1
+	if d.db != nil {
+		if n, err := d.db.NeedsReclassifyCount(); err == nil {
+			needsReclassifyTotal = n
+		} else {
+			logging.Warn("needs_reclassify count failed", "error", err)
+		}
+	}
+
+	logging.Info("daemon stopped",
+		"repos_needs_reclassify_total", needsReclassifyTotal,
+	)
 	return nil
 }
 
@@ -542,7 +558,19 @@ func (d *Daemon) exportMetrics() {
 		d.exporter.RecordRepoMetrics(d.ctx, repoMetrics)
 	}
 
-	logging.Info("recorded metrics", "repos", len(allStates))
+	// ISI-773: include needs_reclassify backlog gauge so each flush carries
+	// the same drift signal the shutdown line surfaces.
+	needsReclassifyTotal := -1
+	if d.db != nil {
+		if n, err := d.db.NeedsReclassifyCount(); err == nil {
+			needsReclassifyTotal = n
+		}
+	}
+
+	logging.Info("recorded metrics",
+		"repos", len(allStates),
+		"repos_needs_reclassify_total", needsReclassifyTotal,
+	)
 
 	// Flush metrics
 	flushCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)

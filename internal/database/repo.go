@@ -3,6 +3,7 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -526,6 +527,216 @@ func (d *DB) MarkAllNeedsReclassify() (int64, error) {
 		return 0, fmt.Errorf("marking repos needs_reclassify: %w", err)
 	}
 	return result.RowsAffected()
+}
+
+// NeedsReclassifyCount returns the number of non-excluded repos currently in
+// status='needs_reclassify'. Surfaced as the `repos_needs_reclassify_total`
+// gauge on metrics flush + daemon shutdown so operators can see when the
+// drain backlog is growing (ISI-773 regression guard).
+func (d *DB) NeedsReclassifyCount() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var n int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM repos WHERE excluded = 0 AND status = 'needs_reclassify'`,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting needs_reclassify repos: %w", err)
+	}
+	return n, nil
+}
+
+// DrainReport is the structured output of DrainNeedsReclassify. It captures
+// what was examined, what was drained, and what was held — sufficient for
+// the admin CLI to render dry-run preview and post-run report.
+type DrainReport struct {
+	// Examined is the count of rows in status='needs_reclassify' (excluded=0)
+	// before any update. Equals Drained + HeldInSink + HeldOther.
+	Examined int
+	// Drained is the count of rows flipped status='needs_reclassify' →
+	// 'active' (or in dry-run mode, the count that would be flipped).
+	Drained int
+	// HeldInSink is the count of rows left in needs_reclassify because they
+	// landed in the (other,*) refusal sink (needs_review=1). These are the
+	// rows the v3 backfill flagged for human triage; the drain leaves them
+	// alone.
+	HeldInSink int
+	// HeldOther is any unexpected residual: rows still in needs_reclassify
+	// that don't match either the drainable predicate or the refusal-sink
+	// predicate. Should be 0 in steady state. Operations should investigate
+	// if non-zero (e.g. legacy rows missing primary_subcategory).
+	HeldOther int
+	// ByCategory groups Drained by primary_category for the report header.
+	ByCategory map[string]int
+	// DryRun is true when the report was produced by a dry-run pass (no
+	// rows mutated, no backup written).
+	DryRun bool
+	// BackupPath is the absolute path to the pre-drain backup file. Empty
+	// in dry-run mode.
+	BackupPath string
+}
+
+// DrainNeedsReclassify performs the deterministic drain of repos stuck in
+// status='needs_reclassify' that already have valid post-v3 (category,
+// subcategory) tuples and are not in the refusal sink. See
+// [ISI-773 plan](/ISI/issues/ISI-773#document-plan) for the rationale.
+//
+// Mechanism: a single UPDATE under BEGIN IMMEDIATE, preceded by a VACUUM
+// INTO backup at <db_path>.preDrain.bak. Drainable predicate:
+//
+//	excluded = 0
+//	AND status = 'needs_reclassify'
+//	AND primary_category != ''
+//	AND primary_subcategory != ''
+//	AND primary_category != 'other'
+//	AND needs_review = 0
+//
+// Rows that don't match (i.e. (other,*) with needs_review=1) stay flagged
+// for human triage. The function is safe to re-run: a second pass drains 0.
+//
+// In dry-run mode (dryRun=true) no backup is written and no rows are
+// mutated; the report's Drained / HeldInSink / HeldOther counts come from
+// SELECT-based previews so the operator can sanity-check the plan before
+// the for-real run.
+//
+// limit, when > 0, caps the number of drained rows in the UPDATE (used by
+// ops for staged drains). When limit <= 0 the drain is unrestricted.
+func (d *DB) DrainNeedsReclassify(dryRun bool, limit int) (DrainReport, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	report := DrainReport{
+		DryRun:     dryRun,
+		ByCategory: make(map[string]int),
+	}
+
+	// Examined: total in needs_reclassify (excluded=0).
+	if err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM repos WHERE excluded = 0 AND status = 'needs_reclassify'`,
+	).Scan(&report.Examined); err != nil {
+		return report, fmt.Errorf("examined count: %w", err)
+	}
+
+	// HeldInSink: in refusal sink, left alone.
+	if err := d.db.QueryRow(`
+		SELECT COUNT(*) FROM repos
+		WHERE excluded = 0 AND status = 'needs_reclassify'
+		  AND primary_category = 'other'
+		  AND needs_review = 1`,
+	).Scan(&report.HeldInSink); err != nil {
+		return report, fmt.Errorf("held-in-sink count: %w", err)
+	}
+
+	// Drainable preview: rows that match the drain predicate.
+	drainPredicate := `
+		excluded = 0
+		AND status = 'needs_reclassify'
+		AND primary_category != ''
+		AND primary_subcategory != ''
+		AND primary_category != 'other'
+		AND needs_review = 0`
+
+	var previewDrain int
+	if err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM repos WHERE` + drainPredicate,
+	).Scan(&previewDrain); err != nil {
+		return report, fmt.Errorf("drainable preview count: %w", err)
+	}
+	if limit > 0 && previewDrain > limit {
+		previewDrain = limit
+	}
+
+	// Held-other: any residual we didn't account for.
+	report.HeldOther = report.Examined - previewDrain - report.HeldInSink
+	if report.HeldOther < 0 {
+		// Shouldn't happen — sets are disjoint by construction. Treat as 0
+		// and proceed; the per-category aggregation will still be honest.
+		report.HeldOther = 0
+	}
+
+	// ByCategory aggregation for drainable preview (used by both dry-run
+	// and live runs to render the report header).
+	byCatRows, err := d.db.Query(`
+		SELECT primary_category, COUNT(*) FROM repos
+		WHERE` + drainPredicate + `
+		GROUP BY primary_category
+		ORDER BY primary_category`)
+	if err != nil {
+		return report, fmt.Errorf("by-category preview: %w", err)
+	}
+	defer byCatRows.Close()
+	for byCatRows.Next() {
+		var cat string
+		var n int
+		if err := byCatRows.Scan(&cat, &n); err != nil {
+			return report, fmt.Errorf("scanning by-category row: %w", err)
+		}
+		report.ByCategory[cat] = n
+	}
+	if err := byCatRows.Err(); err != nil {
+		return report, fmt.Errorf("iterating by-category rows: %w", err)
+	}
+
+	if dryRun {
+		report.Drained = previewDrain
+		return report, nil
+	}
+
+	// Real run: take pre-tx backup (file-backed DBs only). Reuse the same
+	// VACUUM INTO helper that the v3 taxonomy migration uses
+	// (schema_migration.go), so the drain inherits the same WAL-safe
+	// snapshot semantics + stale-file handling.
+	if d.path != "" && !strings.HasPrefix(d.path, ":") && !strings.Contains(d.path, ":memory:") {
+		backupPath := d.path + ".preDrain.bak"
+		if err := d.vacuumIntoBackup(backupPath); err != nil {
+			return report, fmt.Errorf("writing pre-drain backup %s: %w", backupPath, err)
+		}
+		report.BackupPath = backupPath
+	}
+
+	// Run the UPDATE in a transaction. Use a positional limit when set; the
+	// LIMIT clause on UPDATE is supported by SQLite when SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+	// is compiled in. modernc.org/sqlite ships with it enabled.
+	tx, err := d.db.Begin()
+	if err != nil {
+		return report, fmt.Errorf("begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// modernc.org/sqlite does not enable SQLITE_ENABLE_UPDATE_DELETE_LIMIT,
+	// so `UPDATE ... LIMIT N` is a syntax error. We get the same effect by
+	// gating on a primary-key subquery whose row set is bounded by LIMIT.
+	var result sql.Result
+	if limit > 0 {
+		result, err = tx.Exec(
+			`UPDATE repos SET status = 'active' WHERE id IN (
+				SELECT id FROM repos WHERE`+drainPredicate+`
+				ORDER BY id LIMIT ?)`,
+			limit,
+		)
+	} else {
+		result, err = tx.Exec(`UPDATE repos SET status = 'active' WHERE` + drainPredicate)
+	}
+	if err != nil {
+		return report, fmt.Errorf("drain UPDATE: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return report, fmt.Errorf("rows affected: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return report, fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+
+	report.Drained = int(rows)
+	return report, nil
 }
 
 // Metadata operations

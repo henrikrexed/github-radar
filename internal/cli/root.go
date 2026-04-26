@@ -134,6 +134,9 @@ func (c *CLI) runCommand(cmd string, args []string) int {
 	case "status":
 		statusCmd := NewStatusCmd(c)
 		return statusCmd.Run(args)
+	case "admin":
+		adminCmd := NewAdminCmd(c)
+		return adminCmd.Run(args)
 	case "help":
 		c.printHelp()
 		return 0
@@ -191,6 +194,9 @@ Commands:
                               --state <path>
   status             Show daemon status
                      Options: --addr <url>, --format <text|json>
+  admin <action>     Operator interventions on the scanner DB
+                     Actions:
+                       drain-needs-reclassify [--dry-run] [--limit N]
   config validate    Validate configuration file
   config show        Display current configuration
   help               Show this help message
