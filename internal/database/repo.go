@@ -434,8 +434,12 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 }
 
 // ReposNeedingClassification returns repos that are not excluded and have no
-// force_category override, and either have no category yet, or have status
-// 'needs_reclassify' or 'needs_review' (low-confidence results eligible for re-run).
+// force_category override, and that need classification by one of:
+//   - no category yet (newly scanned), or
+//   - status in ('needs_reclassify','needs_review'), or
+//   - never-classified rows the v3 taxonomy backfill stamped with primary_category='other'
+//     (classified_at='' AND status='pending'); without this clause those rows are
+//     permanent zombies because both other branches miss them (ISI-787).
 func (d *DB) ReposNeedingClassification() ([]RepoRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -444,7 +448,11 @@ func (d *DB) ReposNeedingClassification() ([]RepoRecord, error) {
 		SELECT ` + repoSelectColumns + ` FROM repos
 		WHERE excluded = 0
 		  AND force_category = ''
-		  AND (primary_category = '' OR status IN ('needs_reclassify', 'needs_review'))
+		  AND (
+		    primary_category = ''
+		    OR status IN ('needs_reclassify', 'needs_review')
+		    OR (status = 'pending' AND classified_at = '')
+		  )
 		ORDER BY full_name`)
 }
 

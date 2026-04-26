@@ -994,6 +994,53 @@ func TestReposNeedingClassification(t *testing.T) {
 	}
 }
 
+// TestReposNeedingClassification_BackfillZombiePickup is the ISI-787 regression
+// guard. The v3 taxonomy backfill (schema_migration.go) stamps never-classified
+// rows with primary_category='other' + classification_refusal_reason=
+// 'backfill_legacy_other' but leaves status='pending' and classified_at=''.
+// Without the (status='pending' AND classified_at='') clause in
+// ReposNeedingClassification, those rows are permanent zombies — they don't
+// match the empty-category branch (category is now 'other') and they don't
+// match the status-IN branch ('pending' is not in the set). High-star repos
+// like backnotprop/plannotator (4613★) and open-gitagent/gitagent-protocol
+// (2729★) sat stuck for >24h before this was caught.
+func TestReposNeedingClassification_BackfillZombiePickup(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		// Backfill zombie: primary_category='other', status='pending', classified_at=''.
+		{FullName: "z/zombie", Owner: "z", Name: "zombie", Status: "pending", PrimaryCategory: "other", ClassifiedAt: ""},
+		// Real never-classified row (legacy: empty category) — should still be picked up.
+		{FullName: "n/new", Owner: "n", Name: "new", Status: "pending", PrimaryCategory: ""},
+		// Properly-classified repo: should NOT be picked up.
+		{FullName: "k/keep", Owner: "k", Name: "keep", Status: "active", PrimaryCategory: "ai", ClassifiedAt: "2026-04-26T20:00:00Z"},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo(%s): %v", r.FullName, err)
+		}
+	}
+
+	got, err := db.ReposNeedingClassification()
+	if err != nil {
+		t.Fatalf("ReposNeedingClassification: %v", err)
+	}
+	want := map[string]bool{"z/zombie": true, "n/new": true}
+	if len(got) != len(want) {
+		t.Errorf("returned %d repos, want %d", len(got), len(want))
+	}
+	for _, r := range got {
+		if !want[r.FullName] {
+			t.Errorf("unexpected repo in queue: %s (status=%s, category=%s, classified_at=%q)",
+				r.FullName, r.Status, r.PrimaryCategory, r.ClassifiedAt)
+		}
+		delete(want, r.FullName)
+	}
+	for missing := range want {
+		t.Errorf("expected repo %s in queue but missing", missing)
+	}
+}
+
 // Story 11.5: UpdateClassification with minConfidence logic
 
 func TestUpdateClassification_HighConfidence(t *testing.T) {
