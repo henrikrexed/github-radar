@@ -225,6 +225,11 @@ func TestClassificationHealthInstruments(t *testing.T) {
 	if exp.classificationRunCount == nil {
 		t.Error("classificationRunCount is nil — radar.classification.run instrument was not created")
 	}
+	// ISI-782: the Ollama reachability gauge must be registered alongside
+	// the ISI-775 instruments, otherwise RecordOllamaReachable nil-panics.
+	if exp.ollamaReachableGauge == nil {
+		t.Error("ollamaReachableGauge is nil — radar.classification.ollama_reachable instrument was not created")
+	}
 }
 
 // TestRecordPendingBuckets verifies the gauge accepts every (excluded,
@@ -274,13 +279,43 @@ func TestRecordClassificationRun(t *testing.T) {
 	defer exp.ShutdownWithTimeout()
 
 	ctx := context.Background()
+	// ISI-782: aborted_ollama is the new attribute distinguishing
+	// infra-class outage from code-class regression on the run counter.
 	for _, result := range []ClassificationRunResult{
 		ClassificationRunSuccess,
 		ClassificationRunFailed,
 		ClassificationRunPartial,
+		ClassificationRunAbortedOllama,
 	} {
 		exp.RecordClassificationRun(ctx, result)
 	}
+
+	if err := exp.Flush(ctx); err != nil {
+		t.Errorf("Flush error: %v", err)
+	}
+}
+
+// TestRecordOllamaReachable covers the two boolean states emitted on the
+// radar.classification.ollama_reachable gauge per ISI-782, and verifies that
+// distinct endpoints are tagged separately so a fallback-Ollama dashboard
+// split works.
+func TestRecordOllamaReachable(t *testing.T) {
+	cfg := ExporterConfig{
+		Endpoint:    "http://localhost:4318",
+		ServiceName: "test-service",
+		DryRun:      true,
+	}
+
+	exp, err := NewExporter(cfg)
+	if err != nil {
+		t.Fatalf("NewExporter error: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	ctx := context.Background()
+	exp.RecordOllamaReachable(ctx, "http://10.0.0.185:11434", false)
+	exp.RecordOllamaReachable(ctx, "http://10.0.0.185:11434", true)
+	exp.RecordOllamaReachable(ctx, "http://fallback.local:11434", true)
 
 	if err := exp.Flush(ctx); err != nil {
 		t.Errorf("Flush error: %v", err)

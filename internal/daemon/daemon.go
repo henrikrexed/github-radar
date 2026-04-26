@@ -4,6 +4,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -537,13 +538,19 @@ func (d *Daemon) runClassification() {
 
 	summary, err := d.classifier.ClassifyAll(d.ctx)
 
-	// Record classification run outcome (ISI-775). A top-level error → "failed";
-	// per-repo failures only → "partial"; otherwise "success". context.Canceled
-	// is shutdown-driven, not a regression — don't taint the failed counter.
+	// Record classification run outcome.
+	// - context.Canceled → shutdown-driven, don't taint counters (ISI-775).
+	// - ErrClassificationAbortedOllama → infra-class outage, distinct attribute
+	//   so it doesn't trip the existing "failed" alert (ISI-782).
+	// - other top-level error → "failed".
+	// - per-repo failures only → "partial"; otherwise "success".
 	result := metrics.ClassificationRunSuccess
+	abortedOllama := errors.Is(err, classification.ErrClassificationAbortedOllama)
 	switch {
-	case err != nil && err == context.Canceled:
+	case errors.Is(err, context.Canceled):
 		// Skip recording — daemon is shutting down.
+	case abortedOllama:
+		result = metrics.ClassificationRunAbortedOllama
 	case err != nil:
 		result = metrics.ClassificationRunFailed
 	case summary != nil && summary.Failed > 0:
@@ -551,24 +558,34 @@ func (d *Daemon) runClassification() {
 	}
 
 	d.mu.Lock()
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		d.classificationLastErr = err.Error()
 	} else {
 		d.classificationLastErr = ""
 	}
 	d.mu.Unlock()
 
-	if d.exporter != nil && !(err != nil && err == context.Canceled) {
+	if d.exporter != nil && !errors.Is(err, context.Canceled) {
 		d.exporter.RecordClassificationRun(d.ctx, result)
+		// ISI-782: emit the reachability gauge tagged by endpoint. Skip when
+		// no Classify call has yet been observed (e.g. zero repos needed
+		// classification on first cycle) so we don't fabricate a value.
+		if reachable, observed := d.classifier.OllamaReachable(); observed {
+			d.exporter.RecordOllamaReachable(d.ctx, d.classifier.OllamaEndpoint(), reachable)
+		}
 	}
 
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) && !abortedOllama {
 		logging.Error("classification failed", "error", err)
 		return
 	}
 
 	if summary != nil {
-		logging.Info("classification complete",
+		level := "info"
+		if abortedOllama {
+			level = "warn"
+		}
+		logWithLevel(level, "classification complete",
 			"total", summary.Total,
 			"classified", summary.Classified,
 			"needs_review", summary.NeedsReview,

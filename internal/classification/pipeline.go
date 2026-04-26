@@ -2,6 +2,7 @@ package classification
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,13 @@ import (
 	"github.com/hrexed/github-radar/internal/database"
 	"github.com/hrexed/github-radar/internal/github"
 )
+
+// ErrClassificationAbortedOllama is returned by ClassifyAll when the Ollama
+// circuit breaker trips mid-cycle. The daemon recognises this sentinel via
+// errors.Is and emits radar.classification.run{result="aborted_ollama"} so
+// the existing run-failed alert (ISI-775) doesn't conflate a code bug with a
+// known infrastructure outage. See ISI-782.
+var ErrClassificationAbortedOllama = errors.New("classification aborted: ollama unreachable")
 
 // Result holds classification output for one repo.
 type Result struct {
@@ -51,6 +59,26 @@ func NewPipeline(db *database.DB, gh *github.Client, ollama *OllamaClient, cfg c
 		ollama: ollama,
 		cfg:    cfg,
 	}
+}
+
+// OllamaEndpoint returns the configured Ollama endpoint for tagging the
+// radar.classification.ollama_reachable gauge. Returns "" when classification
+// is not configured (no Ollama client). ISI-782.
+func (p *Pipeline) OllamaEndpoint() string {
+	if p.ollama == nil {
+		return ""
+	}
+	return p.ollama.Endpoint()
+}
+
+// OllamaReachable returns (reachable, observed) for the most recent Classify
+// call. observed=false means no call has yet completed and the daemon should
+// skip emitting the gauge rather than fabricate a value. ISI-782.
+func (p *Pipeline) OllamaReachable() (reachable, observed bool) {
+	if p.ollama == nil {
+		return false, false
+	}
+	return p.ollama.LastReachable()
 }
 
 // ClassifySingle classifies a single repository by fetching its README,
@@ -216,8 +244,22 @@ func (p *Pipeline) CheckReadmeHashes(ctx context.Context) (int, error) {
 // It first checks all classified repos for README hash changes, marking changed ones
 // as needs_reclassify so they are included in this classification run.
 // Results are persisted to the database. Progress is written to stderr.
+//
+// Circuit-breaker (ISI-782): the Ollama breaker is reset at the start of every
+// invocation so a recovered Ollama is re-tried promptly. If the breaker trips
+// mid-batch, ClassifyAll emits a single ERROR log line and returns
+// ErrClassificationAbortedOllama so the daemon can record
+// result="aborted_ollama" instead of "failed" — Ollama down is an
+// infra-class signal, not a code-class regression.
 func (p *Pipeline) ClassifyAll(ctx context.Context) (*Summary, error) {
 	start := time.Now()
+
+	// Reset the Ollama circuit breaker so a recovered server is re-tried at
+	// the top of every cycle (ISI-782). Otherwise a single outage would
+	// permanently disable classification until the daemon was restarted.
+	if p.ollama != nil {
+		p.ollama.ResetCircuitBreaker()
+	}
 
 	// Pre-step: detect README changes in already-classified repos.
 	if _, err := p.CheckReadmeHashes(ctx); err != nil {
@@ -238,6 +280,17 @@ func (p *Pipeline) ClassifyAll(ctx context.Context) (*Summary, error) {
 			summary.Duration = time.Since(start)
 			return summary, ctx.Err()
 		default:
+		}
+
+		// ISI-782: bail early if the Ollama circuit breaker has tripped.
+		// Without this we'd burn one short-circuited (sub-millisecond)
+		// ClassifySingle call per remaining repo, which is fast but still
+		// pollutes the failed counter with what is really one infra outage.
+		if p.ollama != nil && p.ollama.CircuitBreakerOpen() {
+			log.Printf("[classification] ERROR: classification aborted: ollama unreachable for %d repos in a row",
+				p.ollama.BreakerThreshold())
+			summary.Duration = time.Since(start)
+			return summary, ErrClassificationAbortedOllama
 		}
 
 		fmt.Fprintf(os.Stderr, "[%d/%d] Classifying %s ...", i+1, summary.Total, repo.FullName)

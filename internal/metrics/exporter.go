@@ -78,6 +78,12 @@ type Exporter struct {
 	// Classification health instruments (ISI-775).
 	reposPendingGauge      metric.Int64Gauge
 	classificationRunCount metric.Int64Counter
+
+	// Ollama reachability gauge (ISI-782). 1 if the last Classify call reached
+	// the server (success or HTTP 4xx/5xx); 0 if ErrOllamaUnreachable. Tagged
+	// by `endpoint` so a future fallback-Ollama deployment can be tracked
+	// separately from the primary endpoint.
+	ollamaReachableGauge metric.Int64Gauge
 }
 
 // NewExporter creates a new metrics exporter.
@@ -286,8 +292,19 @@ func (e *Exporter) createInstruments() error {
 	}
 
 	e.classificationRunCount, err = e.meter.Int64Counter("radar.classification.run",
-		metric.WithDescription("Classification cycles completed, tagged by result (success|failed|partial)"),
+		metric.WithDescription("Classification cycles completed, tagged by result (success|failed|partial|aborted_ollama)"),
 		metric.WithUnit("{runs}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	// Ollama reachability gauge (ISI-782). Paired with the
+	// aborted_ollama result attribute on the run counter so the dashboard
+	// can distinguish "Ollama is down" from "classification code regressed."
+	e.ollamaReachableGauge, err = e.meter.Int64Gauge("radar.classification.ollama_reachable",
+		metric.WithDescription("1 if the last Ollama Classify call reached the server (success or HTTP 4xx/5xx); 0 if network-level unreachable. Tagged by endpoint."),
+		metric.WithUnit("{boolean}"),
 	)
 	if err != nil {
 		return err
@@ -403,6 +420,11 @@ const (
 	// ClassificationRunPartial: ClassifyAll returned no top-level error but
 	// Summary.Failed>0 (per-repo failures during the batch).
 	ClassificationRunPartial ClassificationRunResult = "partial"
+	// ClassificationRunAbortedOllama: the Ollama circuit breaker tripped
+	// mid-cycle (ISI-782) and ClassifyAll bailed early. Distinct from
+	// "failed" so the existing run-failed alert from ISI-775 doesn't conflate
+	// a known infra outage with a code-class regression.
+	ClassificationRunAbortedOllama ClassificationRunResult = "aborted_ollama"
 )
 
 // RecordClassificationRun increments the classification-run counter with the
@@ -410,6 +432,21 @@ const (
 func (e *Exporter) RecordClassificationRun(ctx context.Context, result ClassificationRunResult) {
 	e.classificationRunCount.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("result", string(result))),
+	)
+}
+
+// RecordOllamaReachable sets the radar.classification.ollama_reachable gauge
+// for the given endpoint. reachable=true → 1 (server reachable, even if HTTP
+// 4xx/5xx); reachable=false → 0 (ErrOllamaUnreachable, network-level dial
+// failure). The endpoint attribute lets dashboards split a fallback Ollama
+// from the primary host. ISI-782.
+func (e *Exporter) RecordOllamaReachable(ctx context.Context, endpoint string, reachable bool) {
+	var v int64
+	if reachable {
+		v = 1
+	}
+	e.ollamaReachableGauge.Record(ctx, v,
+		metric.WithAttributes(attribute.String("endpoint", endpoint)),
 	)
 }
 
