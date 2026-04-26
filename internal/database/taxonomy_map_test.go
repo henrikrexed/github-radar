@@ -94,6 +94,64 @@ func TestTaxonomyV2_EveryDomainHasOtherEscapeHatch(t *testing.T) {
 	}
 }
 
+// TestRepoRecord_ResolveTaxonomy guards the (category, subcategory, legacy)
+// triple emitted on every github.radar.* metric series (ISI-786). The cases
+// encode the four ways a row can land in the DB during the v3 backfill /
+// post-drain reclassify window.
+func TestRepoRecord_ResolveTaxonomy(t *testing.T) {
+	cases := []struct {
+		name                         string
+		r                            RepoRecord
+		wantCat, wantSub, wantLegacy string
+	}{
+		{
+			name: "v3 row with primary subcategory + legacy",
+			r: RepoRecord{
+				PrimaryCategory:       "cloud-native",
+				PrimarySubcategory:    "kubernetes",
+				PrimaryCategoryLegacy: "kubernetes",
+			},
+			wantCat: "cloud-native", wantSub: "kubernetes", wantLegacy: "kubernetes",
+		},
+		{
+			name: "force_category overrides primary; force_subcategory carries through",
+			r: RepoRecord{
+				PrimaryCategory:       "ai",
+				PrimarySubcategory:    "agents",
+				PrimaryCategoryLegacy: "ai-agents",
+				ForceCategory:         "cloud-native",
+				ForceSubcategory:      "observability",
+			},
+			wantCat: "cloud-native", wantSub: "observability", wantLegacy: "ai-agents",
+		},
+		{
+			name: "pre-v3 row: primary_category still holds legacy flat slug — collapses to v3 (cat, sub) and lifts legacy",
+			r: RepoRecord{
+				PrimaryCategory:       "ai-agents",
+				PrimarySubcategory:    "",
+				PrimaryCategoryLegacy: "",
+			},
+			wantCat: "ai", wantSub: "agents", wantLegacy: "ai-agents",
+		},
+		{
+			name: "newly-classified row with no legacy and no subcategory — emit empties (stable shape)",
+			r: RepoRecord{
+				PrimaryCategory: "",
+			},
+			wantCat: "", wantSub: "", wantLegacy: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cat, sub, legacy := tc.r.ResolveTaxonomy()
+			if cat != tc.wantCat || sub != tc.wantSub || legacy != tc.wantLegacy {
+				t.Errorf("ResolveTaxonomy() = (%q, %q, %q), want (%q, %q, %q)",
+					cat, sub, legacy, tc.wantCat, tc.wantSub, tc.wantLegacy)
+			}
+		})
+	}
+}
+
 func TestIsAllowedPair(t *testing.T) {
 	tests := []struct {
 		cat, sub string

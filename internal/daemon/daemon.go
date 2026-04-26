@@ -513,15 +513,20 @@ func (d *Daemon) exportMetrics() {
 			continue
 		}
 
-		// Resolve category: DB classification > config > "default"
+		// Resolve taxonomy: DB classification > config > "default"
+		// (ISI-786) — pull the (category, subcategory, legacy) triple via
+		// ResolveTaxonomy so force_* overrides and pre-v3 flat slugs are
+		// collapsed to the v3 (cat, sub) shape with a stable legacy fallback.
 		var categories []string
+		var subcategory, categoryLegacy string
 		if d.db != nil {
 			if repo, err := d.db.GetRepo(fullName); err == nil && repo != nil {
-				if repo.ForceCategory != "" {
-					categories = []string{repo.ForceCategory}
-				} else if repo.PrimaryCategory != "" {
-					categories = []string{repo.PrimaryCategory}
+				cat, sub, legacy := repo.ResolveTaxonomy()
+				if cat != "" {
+					categories = []string{cat}
 				}
+				subcategory = sub
+				categoryLegacy = legacy
 			}
 		}
 		if len(categories) == 0 {
@@ -541,6 +546,8 @@ func (d *Daemon) exportMetrics() {
 			Name:              parts[1],
 			Language:          "", // Would need to store this in state
 			Categories:        categories,
+			Subcategory:       subcategory,
+			CategoryLegacy:    categoryLegacy,
 			Stars:             repoState.Stars,
 			Forks:             repoState.Forks,
 			OpenIssues:        0, // Would need to store this

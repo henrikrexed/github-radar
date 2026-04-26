@@ -200,6 +200,96 @@ func TestMetricUnits_NoInvalidCharacters(t *testing.T) {
 	}
 }
 
+// TestRepoMetrics_AttributesEmitV3Taxonomy guards ISI-786: every recorded
+// `github.radar.*` series MUST carry the `subcategory` and `category_legacy`
+// attributes, even when the values are empty. Gating these on non-empty would
+// silently drop the dimension on rows that haven't been re-classified yet,
+// which is the exact regression Observability Agent surfaced on the dev
+// tenant.
+func TestRepoMetrics_AttributesEmitV3Taxonomy(t *testing.T) {
+	cases := []struct {
+		name              string
+		m                 RepoMetrics
+		wantSubcategory   string
+		wantLegacy        string
+		wantCategoryAttr  bool
+		wantCategoryValue string
+	}{
+		{
+			name: "v3 taxonomy populated",
+			m: RepoMetrics{
+				Owner:          "kubernetes",
+				Name:           "kubernetes",
+				Categories:     []string{"cloud-native"},
+				Subcategory:    "kubernetes",
+				CategoryLegacy: "kubernetes",
+			},
+			wantSubcategory:   "kubernetes",
+			wantLegacy:        "kubernetes",
+			wantCategoryAttr:  true,
+			wantCategoryValue: "cloud-native",
+		},
+		{
+			name: "empty subcategory + legacy still emitted",
+			m: RepoMetrics{
+				Owner:      "newowner",
+				Name:       "newrepo",
+				Categories: []string{"default"},
+			},
+			wantSubcategory:   "",
+			wantLegacy:        "",
+			wantCategoryAttr:  true,
+			wantCategoryValue: "default",
+		},
+		{
+			name: "no categories list — subcategory + legacy still emitted",
+			m: RepoMetrics{
+				Owner:          "owner",
+				Name:           "repo",
+				Subcategory:    "agents",
+				CategoryLegacy: "ai-agents",
+			},
+			wantSubcategory:  "agents",
+			wantLegacy:       "ai-agents",
+			wantCategoryAttr: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			attrs := tc.m.attributes()
+
+			seen := map[string]string{}
+			for _, kv := range attrs {
+				seen[string(kv.Key)] = kv.Value.AsString()
+			}
+
+			subVal, hasSub := seen["subcategory"]
+			if !hasSub {
+				t.Errorf("subcategory attribute missing — must be emitted unconditionally (ISI-786)")
+			} else if subVal != tc.wantSubcategory {
+				t.Errorf("subcategory = %q, want %q", subVal, tc.wantSubcategory)
+			}
+
+			legacyVal, hasLegacy := seen["category_legacy"]
+			if !hasLegacy {
+				t.Errorf("category_legacy attribute missing — must be emitted unconditionally (ISI-786)")
+			} else if legacyVal != tc.wantLegacy {
+				t.Errorf("category_legacy = %q, want %q", legacyVal, tc.wantLegacy)
+			}
+
+			catVal, hasCat := seen["category"]
+			if tc.wantCategoryAttr {
+				if !hasCat {
+					t.Errorf("category attribute missing")
+				} else if catVal != tc.wantCategoryValue {
+					t.Errorf("category = %q, want %q", catVal, tc.wantCategoryValue)
+				}
+			}
+		})
+	}
+}
+
 func TestExporter_Meter(t *testing.T) {
 	cfg := ExporterConfig{
 		Endpoint:    "http://localhost:4318",
