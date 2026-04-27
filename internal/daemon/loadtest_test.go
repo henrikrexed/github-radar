@@ -613,9 +613,24 @@ func caseL1(t *testing.T, fixture []fixtureRow) {
 	}
 }
 
-// caseL1_5 — activity-tier-only isolation. The architect's N1 note
-// requires resource="activity" be tagged independently so a metadata
-// regression cannot hide behind activity noise. Gate: ≤ 1,200/hr.
+// caseL1_5 — activity-tier isolation across both observability layers.
+//
+// Two gates apply post-T5b ([ISI-765](/ISI/issues/ISI-765)):
+//
+//  1. HTTP-level: stub.ActivityCalls counts the four underlying sub-calls
+//     (/pulls, /issues, /contributors, /releases/latest) that
+//     GetActivityMetrics fans out to. ISI-765 acceptance gate is
+//     <1,000 HTTP req/hr at 3,000 repos. With the GraphQL fold-in,
+//     hot/warm/new tiers no longer fan out — only cold tier (~80
+//     repos/hr at default cadence) and truncated-fallback repos still
+//     emit these requests.
+//
+//  2. Logical-counter (resource="activity"): one notify per
+//     GetActivityMetrics invocation. Kept as the cadence-regression
+//     detector per T5 r4 plan. If the GraphQL fold regressed and bulk
+//     fell back to per-repo activity for hot/warm/new, this would jump
+//     from ~80 toward the full 3,000-repo cycle count and trip the
+//     tighter 200/hr gate before the HTTP gate.
 func caseL1_5(t *testing.T, fixture []fixtureRow) {
 	tierCfg := github.DefaultTierConfig()
 	h := newHarness(t, ghstub.Config{}, fixture, tierCfg)
@@ -626,11 +641,25 @@ func caseL1_5(t *testing.T, fixture []fixtureRow) {
 	h.runFor(ctx, time.Hour, 10*time.Minute)
 
 	counts := h.callCounts()
-	activity := h.callsByResource(counts, "activity")
-	t.Logf("L1.5 activity calls/hr = %d (gate 1200)  full=%v", activity, counts)
+	activityLogical := h.callsByResource(counts, "activity")
+	activityHTTP := h.stub.ActivityCalls.Load()
+	t.Logf("L1.5 activity logical=%d (gate 200)  http=%d (gate 1000)  full=%v",
+		activityLogical, activityHTTP, counts)
 
-	if activity > 1200 {
-		t.Errorf("L1.5 activity calls/hr = %d > gate 1200", activity)
+	// ISI-765 acceptance gate: HTTP-level activity drops below 1,000/hr
+	// at 3,000 repos because the GraphQL bulk path supplies activity for
+	// hot/warm/new tiers and only cold + truncated-fallback repos still
+	// fire the four REST sub-calls.
+	if activityHTTP > 1000 {
+		t.Errorf("L1.5 activity HTTP calls/hr = %d > gate 1000 (ISI-765 budget)", activityHTTP)
+	}
+	// Cadence-regression detector. The GraphQL fold-in path satisfies the
+	// hot/warm/new tiers without invoking GetActivityMetrics; if the fold
+	// regresses and the scanner falls back to the per-repo REST path for
+	// those tiers the logical counter balloons from ~80 (cold-only) toward
+	// the full 2,000+ repos/hr cycle rate.
+	if activityLogical > 200 {
+		t.Errorf("L1.5 activity logical calls/hr = %d > gate 200 (GraphQL fold-in regression?)", activityLogical)
 	}
 }
 
@@ -758,7 +787,6 @@ func caseL4(t *testing.T, fixture []fixtureRow) {
 	h.runFor(ctx, 30*time.Minute, 10*time.Minute)
 	baselineCounts := h.callCounts()
 	baselineTotal := h.totalCalls(baselineCounts)
-	baselineActivity := h.callsByResource(baselineCounts, "activity")
 
 	// Snapshot tier histogram pre-burst and publish the gauge so the
 	// post-burst scrape has a baseline to delta against.
@@ -819,34 +847,42 @@ func caseL4(t *testing.T, fixture []fixtureRow) {
 	}
 
 	// Tick at the burst instant: the burst repos are due (LastCollectedAt zero).
-	// Activity collection is one logical call per burst repo.
+	//
+	// Post-T5b ([ISI-765](/ISI/issues/ISI-765)) the burst flows through
+	// the GraphQL bulk path (TierNew) so activity is carried in the
+	// GraphQL response, not via per-repo GetActivityMetrics. The
+	// acceptance proxy shifts from "activity logical counter delta ≥
+	// burstSize" to "graphql batches delta ≥ ⌈burstSize/MaxBatchSize⌉".
+	const graphqlBatchSize = 50
+	burstBatches := int64(burstSize / graphqlBatchSize) // 500/50 = 10 burst-only batches
+	baselineGraphQL := h.callsByResource(baselineCounts, "graphql")
 	h.tick(ctx)
 	afterBurstTick := h.callCounts()
-	burstTickActivity := h.callsByResource(afterBurstTick, "activity") - baselineActivity
-	t.Logf("L4 burst tick: activity delta=%d (expected ≈ %d burst + steady-state hot/warm/new)",
-		burstTickActivity, burstSize)
+	burstTickGraphQL := h.callsByResource(afterBurstTick, "graphql") - baselineGraphQL
+	t.Logf("L4 burst tick: graphql delta=%d (expected ≥ %d burst batches + steady-state hot/warm/new)",
+		burstTickGraphQL, burstBatches)
 
-	if burstTickActivity < burstSize {
-		t.Errorf("L4 burst tick activity delta = %d, want ≥ %d (burst should be collected this tick)",
-			burstTickActivity, burstSize)
+	if burstTickGraphQL < burstBatches {
+		t.Errorf("L4 burst tick graphql delta = %d, want ≥ %d (burst should be collected this tick via GraphQL bulk)",
+			burstTickGraphQL, burstBatches)
 	}
 
 	// Gate (c): no double-fetch. Advance the simulated clock by one
 	// tick-interval (10 min); the burst's NewInterval is 1h, so the
-	// burst slice MUST NOT be fetched again. Activity delta on the
-	// next tick should be small (just steady-state cadence) — far
-	// below burstSize, which is the regression signature.
+	// burst slice MUST NOT be fetched again. GraphQL delta on the next
+	// tick should be small (steady-state hot/warm/new only) — far below
+	// burstBatches, which is the regression signature.
 	h.clock.Advance(10 * time.Minute)
 	h.tick(ctx)
 	afterSecondTick := h.callCounts()
-	secondTickActivity := h.callsByResource(afterSecondTick, "activity") -
-		h.callsByResource(afterBurstTick, "activity")
-	t.Logf("L4 second tick: activity delta=%d (expected ≪ %d; no burst re-fetch)",
-		secondTickActivity, burstSize)
+	secondTickGraphQL := h.callsByResource(afterSecondTick, "graphql") -
+		h.callsByResource(afterBurstTick, "graphql")
+	t.Logf("L4 second tick: graphql delta=%d (expected ≪ %d; no burst re-fetch)",
+		secondTickGraphQL, burstBatches)
 
-	if secondTickActivity >= burstSize {
-		t.Errorf("L4 next-tick activity delta = %d ≥ %d (burst slice was re-fetched within NewInterval — double-fetch regression)",
-			secondTickActivity, burstSize)
+	if secondTickGraphQL >= burstBatches {
+		t.Errorf("L4 next-tick graphql delta = %d ≥ %d (burst slice was re-fetched within NewInterval — double-fetch regression)",
+			secondTickGraphQL, burstBatches)
 	}
 
 	// Gate (b): combined budget across the burst hour ≤ 3,000 calls/hr.
@@ -1049,12 +1085,12 @@ func caseL7(t *testing.T, fixture []fixtureRow) {
 		t.Errorf("L7 tick2 repo (REST) delta = %d, want 0 (cold not due)", delta)
 	}
 
-	// And confirm the promoted repo was processed exactly once via the
-	// bulk path (not double-fetched as both bulk and cold).
-	c2 := h.callCounts()
-	if got := c2["activity|ok"] - c1["activity|ok"]; got < 1 {
-		t.Errorf("L7 tick2 activity delta = %d, want >= 1 (promoted repo's activity)", got)
-	}
+	// Post-T5b ([ISI-765](/ISI/issues/ISI-765)) the promoted repo's
+	// activity is carried in the GraphQL response — the activity|ok
+	// counter no longer fires for hot/warm/new tiers, so the graphql
+	// delta = 1 and repo delta = 0 above already prove the repo was
+	// fetched exactly once via the bulk path (not double-fetched as
+	// both bulk and cold). No separate activity assertion needed.
 }
 
 // caseL8 — GraphQL transient 5xx on one batch. Per the G3 fix
@@ -1064,14 +1100,17 @@ func caseL7(t *testing.T, fixture []fixtureRow) {
 //  1. The stub serves more requests than there are batches (proving
 //     the per-batch retry actually fired).
 //  2. Every batch reports `result="ok"` from the client's perspective,
-//     because the retry recovered. Activity for every repo still
-//     fires (no batch was lost).
+//     because the retry recovered. Both batches must surface as
+//     `graphql|ok` in the client view — if G1 (per-batch failure
+//     containment) regressed, the outer loop would bail on the first
+//     batch error and the second batch would surface as graphql|error
+//     (or be missing entirely).
 //
-// If G3 (replayable body) regressed, the retry would silently send an
-// empty body, the server would 200 with empty data, and `activity|ok`
-// would drop. If G1 (per-batch failure containment) regressed, the
-// outer loop would bail on the first batch error and `activity|ok`
-// would also drop. Either failure mode trips the assertion below.
+// Post-T5b ([ISI-765](/ISI/issues/ISI-765)) activity for hot/warm/new
+// tiers is carried in the GraphQL response, so the activity|ok counter
+// no longer fires on the bulk path. The recovery proof shifts entirely
+// to the graphql|ok = 2 assertion plus state inspection: every fixture
+// repo must have a populated state row from the bulk fetch.
 func caseL8(t *testing.T, fixture []fixtureRow) {
 	tierCfg := github.DefaultTierConfig()
 	// 100 repos -> 2 batches at MaxGraphQLBatchSize=50.
@@ -1098,14 +1137,24 @@ func caseL8(t *testing.T, fixture []fixtureRow) {
 	if stubReqs < 3 {
 		t.Errorf("L8 stub.GraphQLCalls = %d; expected ≥ 3 (proves G3 replay-retry fired)", stubReqs)
 	}
-	// Every repo should have its activity collected (proves G1
-	// per-batch failure containment kept the second batch flowing).
-	if got := counts["activity|ok"]; got != int64(len(smallFixture)) {
-		t.Errorf("L8 activity|ok = %d, want %d (one per fixture repo)", got, len(smallFixture))
-	}
 	// Eventually-successful batches surface as `graphql|ok` from the
-	// client's view; the 502 itself was swallowed by DoWithRetry.
+	// client's view; the 502 itself was swallowed by DoWithRetry. If G1
+	// (per-batch failure containment) regressed, the second batch would
+	// surface as graphql|error or be missing — either trips this gate.
 	if got := counts["graphql|ok"]; got != 2 {
 		t.Errorf("L8 graphql|ok = %d, want 2 (both batches recover)", got)
+	}
+	// Every fixture repo must have a state row written, proving the
+	// recovered batch's payload reached the scanner. Without G1 the
+	// second batch would never reach state.SetRepoState.
+	statesWritten := 0
+	for _, row := range smallFixture {
+		if h.store.GetRepoState(row.FullName) != nil {
+			statesWritten++
+		}
+	}
+	if statesWritten != len(smallFixture) {
+		t.Errorf("L8 statesWritten = %d, want %d (G1 per-batch containment regression)",
+			statesWritten, len(smallFixture))
 	}
 }
