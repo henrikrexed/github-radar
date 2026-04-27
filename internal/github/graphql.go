@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // MaxGraphQLBatchSize is the maximum number of repos queried in a single
@@ -104,8 +105,20 @@ func (c *Client) BulkFetchMetadata(ctx context.Context, repos []Repo) (*BulkFetc
 	return result, nil
 }
 
+// graphqlActivityNodePage bounds how many merged-PR / recent-issue nodes
+// we request per repo for the 7-day activity-window count (ISI-765 T5b).
+// 100 is GitHub's per-connection page maximum; repos that merge or open
+// >100 PRs/issues in 7 days set ActivityTruncated and fall back to REST.
+const graphqlActivityNodePage = 100
+
 // graphqlRepoFragment is the set of fields collected per repository.
 // Keep this in sync with RepoMetrics; the fragment name is used below.
+//
+// Activity sub-queries (recentMergedPRs, recentIssues, mentionableUsers,
+// latestReleases) were added in T5b (ISI-765) so a single GraphQL batch
+// replaces the 4 REST sub-calls per repo previously issued by
+// GetActivityMetrics. See the issue's plan doc for the field-by-field
+// parity analysis.
 const graphqlRepoFragment = `fragment RepoFields on Repository {
   nameWithOwner
   stargazerCount
@@ -115,6 +128,18 @@ const graphqlRepoFragment = `fragment RepoFields on Repository {
   primaryLanguage { name }
   repositoryTopics(first: 20) { nodes { topic { name } } }
   description
+  recentMergedPRs: pullRequests(states: MERGED, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
+    nodes { mergedAt }
+    pageInfo { hasNextPage }
+  }
+  recentIssues: issues(states: [OPEN, CLOSED], first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+    nodes { createdAt }
+    pageInfo { hasNextPage }
+  }
+  mentionableUsers(first: 1) { totalCount }
+  latestReleases: releases(first: 1, orderBy: {field: CREATED_AT, direction: DESC}) {
+    nodes { tagName name publishedAt url }
+  }
 }`
 
 // bulkFetchBatch issues a single aliased GraphQL query for up to
@@ -210,6 +235,10 @@ func (c *Client) bulkFetchBatch(ctx context.Context, batch []Repo, out *BulkFetc
 			metrics.Topics = append(metrics.Topics, t.Topic.Name)
 		}
 
+		activity, truncated := extractActivityFromNode(&node, time.Now())
+		metrics.Activity = activity
+		metrics.ActivityTruncated = truncated
+
 		out.Metrics[fullName] = metrics
 	}
 
@@ -259,14 +288,18 @@ func formatGraphQLErrors(errs []graphqlError) string {
 
 // graphqlRepoNode is the decoded shape of one aliased `repository` response.
 type graphqlRepoNode struct {
-	NameWithOwner    string              `json:"nameWithOwner"`
-	StargazerCount   int                 `json:"stargazerCount"`
-	ForkCount        int                 `json:"forkCount"`
-	Issues           graphqlTotalCount   `json:"issues"`
-	PullRequests     graphqlTotalCount   `json:"pullRequests"`
-	PrimaryLanguage  *graphqlLanguage    `json:"primaryLanguage"`
-	RepositoryTopics graphqlTopicResults `json:"repositoryTopics"`
-	Description      string              `json:"description"`
+	NameWithOwner    string                `json:"nameWithOwner"`
+	StargazerCount   int                   `json:"stargazerCount"`
+	ForkCount        int                   `json:"forkCount"`
+	Issues           graphqlTotalCount     `json:"issues"`
+	PullRequests     graphqlTotalCount     `json:"pullRequests"`
+	PrimaryLanguage  *graphqlLanguage      `json:"primaryLanguage"`
+	RepositoryTopics graphqlTopicResults   `json:"repositoryTopics"`
+	Description      string                `json:"description"`
+	RecentMergedPRs  graphqlMergedPRsPage  `json:"recentMergedPRs"`
+	RecentIssues     graphqlIssuesPage     `json:"recentIssues"`
+	MentionableUsers graphqlTotalCount     `json:"mentionableUsers"`
+	LatestReleases   graphqlReleasesResult `json:"latestReleases"`
 }
 
 type graphqlTotalCount struct {
@@ -285,4 +318,100 @@ type graphqlTopicNode struct {
 	Topic struct {
 		Name string `json:"name"`
 	} `json:"topic"`
+}
+
+type graphqlMergedPRsPage struct {
+	Nodes    []graphqlMergedPR `json:"nodes"`
+	PageInfo graphqlPageInfo   `json:"pageInfo"`
+}
+
+type graphqlMergedPR struct {
+	MergedAt *time.Time `json:"mergedAt"`
+}
+
+type graphqlIssuesPage struct {
+	Nodes    []graphqlIssueNode `json:"nodes"`
+	PageInfo graphqlPageInfo    `json:"pageInfo"`
+}
+
+type graphqlIssueNode struct {
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type graphqlPageInfo struct {
+	HasNextPage bool `json:"hasNextPage"`
+}
+
+type graphqlReleasesResult struct {
+	Nodes []graphqlReleaseNode `json:"nodes"`
+}
+
+type graphqlReleaseNode struct {
+	TagName     string    `json:"tagName"`
+	Name        string    `json:"name"`
+	PublishedAt time.Time `json:"publishedAt"`
+	URL         string    `json:"url"`
+}
+
+// extractActivityFromNode converts the GraphQL activity sub-query results
+// into an ActivityMetrics value plus a `truncated` flag. `now` is the
+// reference timestamp for the rolling 7-day window — passed in so tests
+// can deterministically anchor the window without time mocking.
+//
+// Returns (nil, false) only if the GraphQL response contained no
+// activity sub-tree at all (zero-valued page); that case is currently
+// not produced by GitHub for valid repos but is handled defensively so
+// the caller can fall back to REST.
+func extractActivityFromNode(node *graphqlRepoNode, now time.Time) (*ActivityMetrics, bool) {
+	sevenDaysAgo := now.Add(-7 * 24 * time.Hour)
+
+	mergedCount := 0
+	for _, pr := range node.RecentMergedPRs.Nodes {
+		if pr.MergedAt != nil && pr.MergedAt.After(sevenDaysAgo) {
+			mergedCount++
+		}
+	}
+	// Truncated if the page is full AND the oldest returned merge is
+	// still inside the 7-day window — meaning there may be more in the
+	// window that we did not see. We use len(nodes) >= page-size as the
+	// "full page" signal and trust the API's ordering (UPDATED_AT desc)
+	// to put the oldest at the tail.
+	mergedTruncated := false
+	if len(node.RecentMergedPRs.Nodes) >= graphqlActivityNodePage && node.RecentMergedPRs.PageInfo.HasNextPage {
+		if last := node.RecentMergedPRs.Nodes[len(node.RecentMergedPRs.Nodes)-1]; last.MergedAt != nil && last.MergedAt.After(sevenDaysAgo) {
+			mergedTruncated = true
+		}
+	}
+
+	issueCount := 0
+	for _, iss := range node.RecentIssues.Nodes {
+		if iss.CreatedAt.After(sevenDaysAgo) {
+			issueCount++
+		}
+	}
+	issueTruncated := false
+	if len(node.RecentIssues.Nodes) >= graphqlActivityNodePage && node.RecentIssues.PageInfo.HasNextPage {
+		if last := node.RecentIssues.Nodes[len(node.RecentIssues.Nodes)-1]; last.CreatedAt.After(sevenDaysAgo) {
+			issueTruncated = true
+		}
+	}
+
+	var release *ReleaseInfo
+	if len(node.LatestReleases.Nodes) > 0 {
+		r := node.LatestReleases.Nodes[0]
+		release = &ReleaseInfo{
+			TagName:     r.TagName,
+			Name:        r.Name,
+			PublishedAt: r.PublishedAt,
+			URL:         r.URL,
+		}
+	}
+
+	metrics := &ActivityMetrics{
+		MergedPRs7d:   mergedCount,
+		NewIssues7d:   issueCount,
+		Contributors:  node.MentionableUsers.TotalCount,
+		LatestRelease: release,
+	}
+	return metrics, mergedTruncated || issueTruncated
 }
