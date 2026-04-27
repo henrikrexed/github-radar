@@ -8,10 +8,13 @@ The classification pipeline:
 
 1. Identifies repositories needing classification (new, or README changed)
 2. Fetches the repository README from GitHub
-3. Builds a prompt with repo metadata (name, description, language, topics, stars, README excerpt)
-4. Sends the prompt to an Ollama LLM
-5. Parses the JSON response for category, confidence, and reasoning
-6. Stores the result — or marks as `needs_review` if confidence is below the threshold
+3. Live-fetches `description` and `topics` from the GitHub repository
+   endpoint (these are **not** persisted in `scanner.db` — see the
+   [scanner SQLite schema](./architecture.md) note)
+4. Builds a prompt with repo metadata (name, description, language, topics, stars, README excerpt)
+5. Sends the prompt to an Ollama LLM
+6. Parses the JSON response for category, confidence, and reasoning
+7. Stores the result — or marks as `needs_review` if confidence is below the threshold
 
 ## Prerequisites
 

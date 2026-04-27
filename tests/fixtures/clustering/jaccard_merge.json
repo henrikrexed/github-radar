@@ -1,0 +1,15 @@
+{
+  "name": "jaccard_merge",
+  "description": "Two candidate clusters (token A on 5 repos, token B on 5 repos) with 4 repos in common — Jaccard = 4/(5+5-4) = 4/6 = 0.667 ≥ 0.6 → must merge into a single 6-repo cluster carrying both tokens.",
+  "input": [
+    {"full_name": "alice/aaa", "primary_category": "ai", "topics": ["alpha", "beta"],  "confidence": 0.80},
+    {"full_name": "bob/bbb",   "primary_category": "ai", "topics": ["alpha", "beta"],  "confidence": 0.80},
+    {"full_name": "carol/ccc", "primary_category": "ai", "topics": ["alpha", "beta"],  "confidence": 0.80},
+    {"full_name": "dan/ddd",   "primary_category": "ai", "topics": ["alpha", "beta"],  "confidence": 0.80},
+    {"full_name": "eve/eee",   "primary_category": "ai", "topics": ["alpha"],          "confidence": 0.80},
+    {"full_name": "frank/fff", "primary_category": "ai", "topics": ["beta"],           "confidence": 0.80}
+  ],
+  "expected_clusters": [
+    {"tokens": ["alpha", "beta"], "repo_count": 6, "qualifies_for_auto_file": true}
+  ]
+}

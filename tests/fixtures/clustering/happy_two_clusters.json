@@ -1,0 +1,20 @@
+{
+  "name": "happy_two_clusters",
+  "description": "Two distinct clusters with no overlap. Each has 5 repos and avg confidence > 0.6, so both qualify for auto-file.",
+  "input": [
+    {"full_name": "alice/quantum-engine",  "primary_category": "ai", "topics": ["quantum-computing", "variational-algorithms"], "confidence": 0.82},
+    {"full_name": "bob/qml-toolkit",       "primary_category": "ai", "topics": ["quantum-computing", "machine-learning"],        "confidence": 0.78},
+    {"full_name": "carol/q-circuits",      "primary_category": "ai", "topics": ["quantum-computing"],                            "confidence": 0.91},
+    {"full_name": "dan/quantum-sim",       "primary_category": "ai", "topics": ["quantum-computing", "physics-simulation"],      "confidence": 0.65},
+    {"full_name": "eve/qaoa-solver",       "primary_category": "ai", "topics": ["quantum-computing", "variational-algorithms"], "confidence": 0.74},
+    {"full_name": "alice/svelte-router",   "primary_category": "devtools", "topics": ["svelte-framework", "router"],            "confidence": 0.88},
+    {"full_name": "bob/svelte-store",      "primary_category": "devtools", "topics": ["svelte-framework", "state-management"],  "confidence": 0.82},
+    {"full_name": "carol/svelte-forms",    "primary_category": "devtools", "topics": ["svelte-framework", "forms"],             "confidence": 0.71},
+    {"full_name": "dan/svelte-ssr",        "primary_category": "devtools", "topics": ["svelte-framework", "ssr"],               "confidence": 0.68},
+    {"full_name": "eve/svelte-ui-kit",     "primary_category": "devtools", "topics": ["svelte-framework", "components"],        "confidence": 0.79}
+  ],
+  "expected_clusters": [
+    {"tokens": ["quantum-computing"], "repo_count": 5, "qualifies_for_auto_file": true},
+    {"tokens": ["svelte-framework"],  "repo_count": 5, "qualifies_for_auto_file": true}
+  ]
+}

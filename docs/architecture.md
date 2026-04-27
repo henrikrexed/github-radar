@@ -85,7 +85,40 @@ This prevents corruption if the process crashes mid-write.
 
 The state store is thread-safe (uses `sync.RWMutex`) for concurrent access by the daemon's scan loop and HTTP status endpoint.
 
-### State Schema
+### Scanner SQLite Schema
+
+The scanner persists repo metrics and classification state in `scanner.db`
+(SQLite, path derived from `$XDG_DATA_HOME/github-radar/` or
+`$HOME/.local/share/github-radar/`). The `repos` table carries scan metrics,
+growth/velocity scoring, conditional-request cache (ETag/Last-Modified), and
+classification outputs (`primary_category`, `primary_subcategory`,
+`category_confidence`, `readme_hash`, plus the taxonomy v3 sibling columns:
+`is_curated_list`, `needs_review`, `primary_category_legacy`,
+`force_subcategory`, `classification_override_reason`,
+`classification_refusal_reason`).
+
+A composite index `idx_repos_cat_subcat` on `(primary_category,
+primary_subcategory)` accelerates aggregate queries, and the
+`repos_legacy_v1` view exposes a `legacy_category` column sourced from
+the preserved `primary_category_legacy` snapshot, so flat-string consumers
+can migrate incrementally.
+
+**Not persisted: `description` and `topics`.** These were previously stored as
+columns but were empty strings for 100% of active repos in production
+(see ISI-743). As of schema version 2 they were dropped from the schema and
+the classifier live-fetches them from the GitHub API at classification time.
+Schema version 3 (ISI-714) adds the taxonomy v3 columns above. The
+`database.Open` migration is forward-only and accepts v1 (description/topics
+present, no taxonomy) or v2 (columns already dropped, no taxonomy) as a
+starting point and walks them to v3 in a single transaction. A
+`scanner.db.preTaxonomy.bak` snapshot is written before the transaction
+opens so a manual rollback is always available.
+
+#### Legacy JSON State Schema
+
+Older installations persisted state as a JSON file. The scanner still reads
+it on first boot and migrates to SQLite automatically; the JSON shape is
+kept here for reference.
 
 ```json
 {

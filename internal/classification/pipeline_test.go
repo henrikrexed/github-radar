@@ -86,13 +86,23 @@ func ollamaSuccess(category string, confidence float64) http.HandlerFunc {
 }
 
 // ghReadmeHandler returns a GitHub handler that serves README content for known repos.
+// It also serves a minimal `/repos/{owner}/{repo}` response for the live
+// description/topics fetch the classifier performs (ISI-744, folded into the
+// taxonomy v3 migration); tests do not assert on those values, so an empty
+// JSON payload is sufficient.
 func ghReadmeHandler(readmes map[string]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract owner/repo from /repos/{owner}/{repo}/readme
+		// README endpoint: /repos/{owner}/{repo}/readme
 		for key, content := range readmes {
 			if r.URL.Path == "/repos/"+key+"/readme" {
 				w.Header().Set("Content-Type", "text/plain")
 				w.Write([]byte(content))
+				return
+			}
+			// Repo metadata endpoint used by the live description/topics fetch.
+			if r.URL.Path == "/repos/"+key {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"name":"","full_name":"","owner":{"login":""},"description":"","topics":[]}`))
 				return
 			}
 		}
@@ -139,12 +149,11 @@ func TestClassifySingle_Success(t *testing.T) {
 	)
 
 	repo := database.RepoRecord{
-		FullName:    "test/repo",
-		Owner:       "test",
-		Name:        "repo",
-		Description: "A k8s tool",
-		Stars:       500,
-		StarsPrev:   400,
+		FullName:  "test/repo",
+		Owner:     "test",
+		Name:      "repo",
+		Stars:     500,
+		StarsPrev: 400,
 	}
 	if err := deps.db.UpsertRepo(&repo); err != nil {
 		t.Fatalf("UpsertRepo: %v", err)

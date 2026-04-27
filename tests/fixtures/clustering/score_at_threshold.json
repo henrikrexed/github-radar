@@ -1,0 +1,14 @@
+{
+  "name": "score_at_threshold",
+  "description": "Cluster of 5 repos with avg confidence 0.60 — score = 5 × 0.60 = 3.00 (exactly at threshold). All gates pass at the boundary; cluster qualifies for auto-file.",
+  "input": [
+    {"full_name": "alice/aaa", "primary_category": "ai", "topics": ["alpha"], "confidence": 0.60},
+    {"full_name": "bob/bbb",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.60},
+    {"full_name": "carol/ccc", "primary_category": "ai", "topics": ["alpha"], "confidence": 0.60},
+    {"full_name": "dan/ddd",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.60},
+    {"full_name": "eve/eee",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.60}
+  ],
+  "expected_clusters": [
+    {"tokens": ["alpha"], "repo_count": 5, "qualifies_for_auto_file": true}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "jaccard_no_merge",
+  "description": "Two candidate clusters (token A on 5 repos, token B on 5 repos) with only 1 repo in common — Jaccard = 1/(5+5-1) = 1/9 ≈ 0.111 < 0.6 → must NOT merge. Two distinct clusters survive.",
+  "input": [
+    {"full_name": "alice/aaa", "primary_category": "ai", "topics": ["alpha"],         "confidence": 0.75},
+    {"full_name": "bob/bbb",   "primary_category": "ai", "topics": ["alpha"],         "confidence": 0.75},
+    {"full_name": "carol/ccc", "primary_category": "ai", "topics": ["alpha"],         "confidence": 0.75},
+    {"full_name": "dan/ddd",   "primary_category": "ai", "topics": ["alpha"],         "confidence": 0.75},
+    {"full_name": "eve/eee",   "primary_category": "ai", "topics": ["alpha", "beta"], "confidence": 0.75},
+    {"full_name": "frank/fff", "primary_category": "ai", "topics": ["beta"],          "confidence": 0.75},
+    {"full_name": "grace/ggg", "primary_category": "ai", "topics": ["beta"],          "confidence": 0.75},
+    {"full_name": "henry/hhh", "primary_category": "ai", "topics": ["beta"],          "confidence": 0.75},
+    {"full_name": "irene/iii", "primary_category": "ai", "topics": ["beta"],          "confidence": 0.75}
+  ],
+  "expected_clusters": [
+    {"tokens": ["alpha"], "repo_count": 5, "qualifies_for_auto_file": true},
+    {"tokens": ["beta"],  "repo_count": 5, "qualifies_for_auto_file": true}
+  ]
+}

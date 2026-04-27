@@ -61,8 +61,11 @@ func TestOpen_SchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMetadata: %v", err)
 	}
-	if version != "1" {
-		t.Errorf("schema_version = %q, want %q", version, "1")
+	// Open() runs initSchema + runSchemaMigrations, so a fresh DB lands at
+	// the current schema version (bumped when the taxonomy v2 migration
+	// was introduced).
+	if version != SchemaVersionCurrent {
+		t.Errorf("schema_version = %q, want %q", version, SchemaVersionCurrent)
 	}
 }
 
@@ -120,15 +123,14 @@ func TestUpsertAndGetRepo(t *testing.T) {
 	db := mustOpen(t)
 
 	repo := &RepoRecord{
-		FullName:    "cilium/cilium",
-		Owner:       "cilium",
-		Name:        "cilium",
-		Stars:       20000,
-		StarsPrev:   19500,
-		Forks:       5000,
-		Language:    "Go",
-		Description: "eBPF-based Networking",
-		Status:      "pending",
+		FullName:  "cilium/cilium",
+		Owner:     "cilium",
+		Name:      "cilium",
+		Stars:     20000,
+		StarsPrev: 19500,
+		Forks:     5000,
+		Language:  "Go",
+		Status:    "pending",
 	}
 
 	if err := db.UpsertRepo(repo); err != nil {
@@ -273,6 +275,129 @@ func TestReposByCategory(t *testing.T) {
 	}
 	if len(obs) != 2 {
 		t.Errorf("ReposByCategory(observability) = %d, want 2", len(obs))
+	}
+}
+
+// TestReposByCategoryPair exercises the v3 (cat, subcat) tuple read path
+// added for ISI-719 T8. The test fixtures simulate the post-v3-migration
+// shape by upserting repos and then setting the new taxonomy columns
+// directly via SQL (RepoRecord.PrimarySubcategory is added by T3 WS2 — until
+// that lands, tests poke the column with a raw UPDATE).
+func TestReposByCategoryPair(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		{FullName: "a/agents", Owner: "a", Name: "agents", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/llm", Owner: "a", Name: "llm", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/agents2", Owner: "a", Name: "agents2", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "k/k", Owner: "k", Name: "k", Status: "pending", PrimaryCategory: "cloud-native"},
+		{FullName: "x/excluded", Owner: "x", Name: "excluded", Status: "pending", PrimaryCategory: "ai", Excluded: 1},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo: %v", err)
+		}
+	}
+
+	// Set primary_subcategory directly (RepoRecord doesn't expose it pre-WS2).
+	subcats := map[string]string{
+		"a/agents":   "agents",
+		"a/llm":      "llm-tooling",
+		"a/agents2":  "agents",
+		"k/k":        "kubernetes",
+		"x/excluded": "agents",
+	}
+	for full, sub := range subcats {
+		if _, err := db.db.Exec(`UPDATE repos SET primary_subcategory = ? WHERE full_name = ?`, sub, full); err != nil {
+			t.Fatalf("set subcategory %s: %v", full, err)
+		}
+	}
+
+	got, err := db.ReposByCategoryPair("ai", "agents")
+	if err != nil {
+		t.Fatalf("ReposByCategoryPair: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ReposByCategoryPair(ai, agents) = %d rows, want 2 (excluded=1 row must be filtered)", len(got))
+	}
+	if got[0].FullName != "a/agents" || got[1].FullName != "a/agents2" {
+		t.Errorf("ReposByCategoryPair returned %v, want [a/agents a/agents2]", []string{got[0].FullName, got[1].FullName})
+	}
+
+	// Empty result is not an error.
+	none, err := db.ReposByCategoryPair("ai", "no-such-subcategory")
+	if err != nil {
+		t.Fatalf("ReposByCategoryPair(empty): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ReposByCategoryPair(ai, no-such-subcategory) = %d, want 0", len(none))
+	}
+
+	// Mismatched cat/sub combination must not match.
+	cross, err := db.ReposByCategoryPair("cloud-native", "agents")
+	if err != nil {
+		t.Fatalf("ReposByCategoryPair(cross): %v", err)
+	}
+	if len(cross) != 0 {
+		t.Errorf("ReposByCategoryPair(cloud-native, agents) = %d, want 0 (cat/sub must match jointly)", len(cross))
+	}
+}
+
+// TestReposByLegacyCategory exercises the repos_legacy_v1 view path for
+// callers that still hold pre-v3 flat category strings. The view exposes
+// primary_category_legacy as legacy_category (see schema_migration.go).
+func TestReposByLegacyCategory(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		{FullName: "a/agents", Owner: "a", Name: "agents", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/llm", Owner: "a", Name: "llm", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "a/agents2", Owner: "a", Name: "agents2", Status: "pending", PrimaryCategory: "ai"},
+		{FullName: "x/excluded", Owner: "x", Name: "excluded", Status: "pending", PrimaryCategory: "ai", Excluded: 1},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo: %v", err)
+		}
+	}
+
+	// Simulate the post-migration state: primary_category_legacy snapshots
+	// the pre-v3 flat value while primary_category holds the new top-level
+	// domain. Set both for each row.
+	legacies := map[string]string{
+		"a/agents":   "ai-agents",
+		"a/llm":      "llm-tooling",
+		"a/agents2":  "ai-agents",
+		"x/excluded": "ai-agents",
+	}
+	for full, legacy := range legacies {
+		if _, err := db.db.Exec(`UPDATE repos SET primary_category_legacy = ?, primary_subcategory = 'placeholder' WHERE full_name = ?`, legacy, full); err != nil {
+			t.Fatalf("set legacy %s: %v", full, err)
+		}
+	}
+
+	got, err := db.ReposByLegacyCategory("ai-agents")
+	if err != nil {
+		t.Fatalf("ReposByLegacyCategory: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ReposByLegacyCategory(ai-agents) = %d rows, want 2 (excluded=1 row must be filtered)", len(got))
+	}
+	if got[0].FullName != "a/agents" || got[1].FullName != "a/agents2" {
+		t.Errorf("ReposByLegacyCategory returned %v, want [a/agents a/agents2]", []string{got[0].FullName, got[1].FullName})
+	}
+	// PrimaryCategory on returned rows holds the *new* top-level value, not the legacy form.
+	if got[0].PrimaryCategory != "ai" {
+		t.Errorf("returned row PrimaryCategory = %q, want %q (top-level, not legacy flat)", got[0].PrimaryCategory, "ai")
+	}
+
+	// Unknown legacy value returns 0 rows, not an error.
+	none, err := db.ReposByLegacyCategory("does-not-exist")
+	if err != nil {
+		t.Fatalf("ReposByLegacyCategory(unknown): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("ReposByLegacyCategory(does-not-exist) = %d, want 0", len(none))
 	}
 }
 
@@ -679,24 +804,9 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
-// Topics helper
-
-func TestTopicsSlice(t *testing.T) {
-	r := &RepoRecord{Topics: "kubernetes,cncf,networking"}
-	got := r.TopicsSlice()
-	if len(got) != 3 {
-		t.Errorf("TopicsSlice len = %d, want 3", len(got))
-	}
-	if got[0] != "kubernetes" {
-		t.Errorf("TopicsSlice[0] = %q, want %q", got[0], "kubernetes")
-	}
-
-	// Empty topics
-	r2 := &RepoRecord{Topics: ""}
-	if got := r2.TopicsSlice(); got != nil {
-		t.Errorf("empty TopicsSlice = %v, want nil", got)
-	}
-}
+// Topics + description are no longer persisted (ISI-744, folded into the
+// taxonomy v3 migration). The RepoRecord fields and TopicsSlice helper are
+// gone; the classifier live-fetches them from the GitHub API.
 
 // Story 11.7: Classification and reclassification triggers
 
@@ -884,6 +994,53 @@ func TestReposNeedingClassification(t *testing.T) {
 	}
 }
 
+// TestReposNeedingClassification_BackfillZombiePickup is the ISI-787 regression
+// guard. The v3 taxonomy backfill (schema_migration.go) stamps never-classified
+// rows with primary_category='other' + classification_refusal_reason=
+// 'backfill_legacy_other' but leaves status='pending' and classified_at=''.
+// Without the (status='pending' AND classified_at='') clause in
+// ReposNeedingClassification, those rows are permanent zombies — they don't
+// match the empty-category branch (category is now 'other') and they don't
+// match the status-IN branch ('pending' is not in the set). High-star repos
+// like backnotprop/plannotator (4613★) and open-gitagent/gitagent-protocol
+// (2729★) sat stuck for >24h before this was caught.
+func TestReposNeedingClassification_BackfillZombiePickup(t *testing.T) {
+	db := mustOpen(t)
+
+	repos := []*RepoRecord{
+		// Backfill zombie: primary_category='other', status='pending', classified_at=''.
+		{FullName: "z/zombie", Owner: "z", Name: "zombie", Status: "pending", PrimaryCategory: "other", ClassifiedAt: ""},
+		// Real never-classified row (legacy: empty category) — should still be picked up.
+		{FullName: "n/new", Owner: "n", Name: "new", Status: "pending", PrimaryCategory: ""},
+		// Properly-classified repo: should NOT be picked up.
+		{FullName: "k/keep", Owner: "k", Name: "keep", Status: "active", PrimaryCategory: "ai", ClassifiedAt: "2026-04-26T20:00:00Z"},
+	}
+	for _, r := range repos {
+		if err := db.UpsertRepo(r); err != nil {
+			t.Fatalf("UpsertRepo(%s): %v", r.FullName, err)
+		}
+	}
+
+	got, err := db.ReposNeedingClassification()
+	if err != nil {
+		t.Fatalf("ReposNeedingClassification: %v", err)
+	}
+	want := map[string]bool{"z/zombie": true, "n/new": true}
+	if len(got) != len(want) {
+		t.Errorf("returned %d repos, want %d", len(got), len(want))
+	}
+	for _, r := range got {
+		if !want[r.FullName] {
+			t.Errorf("unexpected repo in queue: %s (status=%s, category=%s, classified_at=%q)",
+				r.FullName, r.Status, r.PrimaryCategory, r.ClassifiedAt)
+		}
+		delete(want, r.FullName)
+	}
+	for missing := range want {
+		t.Errorf("expected repo %s in queue but missing", missing)
+	}
+}
+
 // Story 11.5: UpdateClassification with minConfidence logic
 
 func TestUpdateClassification_HighConfidence(t *testing.T) {
@@ -1012,13 +1169,5 @@ func TestUpdateClassification_Reclassify(t *testing.T) {
 	}
 	if got.ReadmeHash != "newhash" {
 		t.Errorf("ReadmeHash = %q, want %q", got.ReadmeHash, "newhash")
-	}
-}
-
-func TestSetTopicsFromSlice(t *testing.T) {
-	r := &RepoRecord{}
-	r.SetTopicsFromSlice([]string{"a", "b", "c"})
-	if r.Topics != "a,b,c" {
-		t.Errorf("Topics = %q, want %q", r.Topics, "a,b,c")
 	}
 }

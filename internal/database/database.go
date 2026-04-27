@@ -71,6 +71,11 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("initializing schema: %w", err)
 	}
 
+	if err := d.runSchemaMigrations(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("running schema migrations: %w", err)
+	}
+
 	return d, nil
 }
 
@@ -84,8 +89,20 @@ func (d *DB) Path() string {
 	return d.path
 }
 
+// SQL returns the underlying *sql.DB for read-only consumers (e.g. the
+// audit package) that need to run their own ad-hoc queries instead of
+// going through one of the typed accessors above. Callers must not Close
+// the returned handle — the wrapping DB owns its lifecycle.
+func (d *DB) SQL() *sql.DB {
+	return d.db
+}
+
 // initSchema creates the repos table and indexes if they don't exist.
-// This covers Story 10.1 (base schema) and Story 10.2 (classification columns).
+// Base schema: Story 10.1 (repos table) + Story 10.2 (classification columns).
+// Schema v2 (ISI-744, folded into v3): empty `description` and `topics`
+// columns are not created on a fresh DB — the classifier live-fetches them
+// from the GitHub API. Pre-existing v1 databases get those columns dropped
+// by runSchemaMigrations.
 func (d *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS repos (
@@ -94,7 +111,6 @@ func (d *DB) initSchema() error {
 		owner           TEXT    NOT NULL,
 		name            TEXT    NOT NULL,
 		language        TEXT    NOT NULL DEFAULT '',
-		description     TEXT    NOT NULL DEFAULT '',
 		stars           INTEGER NOT NULL DEFAULT 0,
 		stars_prev      INTEGER NOT NULL DEFAULT 0,
 		forks           INTEGER NOT NULL DEFAULT 0,
@@ -116,7 +132,6 @@ func (d *DB) initSchema() error {
 		created_at      TEXT    NOT NULL DEFAULT '',
 		first_seen_at   TEXT    NOT NULL DEFAULT (datetime('now')),
 		last_collected_at TEXT  NOT NULL DEFAULT '',
-		topics          TEXT    NOT NULL DEFAULT '',
 		status          TEXT    NOT NULL DEFAULT 'pending',
 		etag            TEXT    NOT NULL DEFAULT '',
 		last_modified   TEXT    NOT NULL DEFAULT '',

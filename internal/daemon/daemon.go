@@ -175,16 +175,22 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		if err != nil {
 			return nil, fmt.Errorf("creating metrics exporter: %w", err)
 		}
+		endpoint := cfg.Otel.Endpoint
+		if endpoint == "" {
+			endpoint = "(from OTEL_EXPORTER_OTLP_ENDPOINT env var or default)"
+		}
+		logging.Info("metrics exporter created", "endpoint", endpoint, "service_name", cfg.Otel.ServiceName)
 	}
 
-	// Open the database so classification and the T5 refresh-tier
-	// classifier can read FirstSeenAt. Either feature is allowed to
-	// degrade gracefully when the DB cannot be opened.
+	// Open the database so classification, metric-export category
+	// resolution, and the T5 refresh-tier classifier can read
+	// FirstSeenAt. All three features degrade gracefully when the DB
+	// cannot be opened.
 	var classifyDB *database.DB
 	var classifyPipeline *classification.Pipeline
 	classifyDB, err = database.Open("")
 	if err != nil {
-		logging.Warn("could not open database, classification and refresh-tier first-seen disabled", "error", err)
+		logging.Warn("could not open database, classification, DB-based categories, and refresh-tier first-seen disabled", "error", err)
 		classifyDB = nil
 	} else if cfg.Classification.OllamaEndpoint != "" && cfg.Classification.Model != "" {
 		clsCfg := cfg.Classification
@@ -332,7 +338,23 @@ func (d *Daemon) shutdown() error {
 		logging.Warn("state save error", "error", err)
 	}
 
-	logging.Info("daemon stopped")
+	// ISI-773 regression guard: surface the needs_reclassify backlog on the
+	// daemon's final log line so operators see drift the moment the scanner
+	// stops. A non-zero number larger than ~50 for >24h is the early signal
+	// that some bulk MarkAllNeedsReclassify-style operation needs a drain
+	// pass (`github-radar admin drain-needs-reclassify`).
+	needsReclassifyTotal := -1
+	if d.db != nil {
+		if n, err := d.db.NeedsReclassifyCount(); err == nil {
+			needsReclassifyTotal = n
+		} else {
+			logging.Warn("needs_reclassify count failed", "error", err)
+		}
+	}
+
+	logging.Info("daemon stopped",
+		"repos_needs_reclassify_total", needsReclassifyTotal,
+	)
 	return nil
 }
 
@@ -423,6 +445,9 @@ func (d *Daemon) runScan() {
 		d.runDiscovery()
 	}
 
+	// Sync in-memory store to database so classification and metric export can find repos
+	d.syncStoreToDatabase()
+
 	// Run classification if enabled
 	if d.classifier != nil {
 		d.runClassification()
@@ -494,18 +519,39 @@ func (d *Daemon) runClassification() {
 func (d *Daemon) exportMetrics() {
 	allStates := d.store.AllRepoStates()
 
+	if len(allStates) == 0 {
+		logging.Warn("no repo states to export metrics for")
+		return
+	}
+
 	for fullName, repoState := range allStates {
 		parts := strings.SplitN(fullName, "/", 2)
 		if len(parts) != 2 {
 			continue
 		}
 
-		// Find categories from config
+		// Resolve taxonomy: DB classification > config > "default"
+		// (ISI-786) — pull the (category, subcategory, legacy) triple via
+		// ResolveTaxonomy so force_* overrides and pre-v3 flat slugs are
+		// collapsed to the v3 (cat, sub) shape with a stable legacy fallback.
 		var categories []string
-		for _, tracked := range d.cfg.Repositories {
-			if tracked.Repo == fullName {
-				categories = tracked.Categories
-				break
+		var subcategory, categoryLegacy string
+		if d.db != nil {
+			if repo, err := d.db.GetRepo(fullName); err == nil && repo != nil {
+				cat, sub, legacy := repo.ResolveTaxonomy()
+				if cat != "" {
+					categories = []string{cat}
+				}
+				subcategory = sub
+				categoryLegacy = legacy
+			}
+		}
+		if len(categories) == 0 {
+			for _, tracked := range d.cfg.Repositories {
+				if tracked.Repo == fullName {
+					categories = tracked.Categories
+					break
+				}
 			}
 		}
 		if len(categories) == 0 {
@@ -517,6 +563,8 @@ func (d *Daemon) exportMetrics() {
 			Name:              parts[1],
 			Language:          "", // Would need to store this in state
 			Categories:        categories,
+			Subcategory:       subcategory,
+			CategoryLegacy:    categoryLegacy,
 			Stars:             repoState.Stars,
 			Forks:             repoState.Forks,
 			OpenIssues:        0, // Would need to store this
@@ -534,11 +582,80 @@ func (d *Daemon) exportMetrics() {
 		d.exporter.RecordRepoMetrics(d.ctx, repoMetrics)
 	}
 
+	// ISI-773: include needs_reclassify backlog gauge so each flush carries
+	// the same drift signal the shutdown line surfaces.
+	needsReclassifyTotal := -1
+	if d.db != nil {
+		if n, err := d.db.NeedsReclassifyCount(); err == nil {
+			needsReclassifyTotal = n
+		}
+	}
+
+	logging.Info("recorded metrics",
+		"repos", len(allStates),
+		"repos_needs_reclassify_total", needsReclassifyTotal,
+	)
+
 	// Flush metrics
 	flushCtx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
 	if err := d.exporter.Flush(flushCtx); err != nil {
-		logging.Warn("metrics flush error", "error", err)
+		logging.Error("metrics flush failed", "error", err)
+	} else {
+		logging.Info("metrics flushed successfully")
+	}
+}
+
+// syncStoreToDatabase syncs repos from the in-memory store to the SQLite database.
+// This ensures the classification pipeline and metric export can find repo records.
+// Only scan-related fields are updated; classification fields are preserved.
+func (d *Daemon) syncStoreToDatabase() {
+	if d.db == nil {
+		return
+	}
+
+	allStates := d.store.AllRepoStates()
+	synced := 0
+	for fullName, rs := range allStates {
+		parts := strings.SplitN(fullName, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		record := &database.RepoRecord{
+			FullName:              fullName,
+			Owner:                 parts[0],
+			Name:                  parts[1],
+			Stars:                 rs.Stars,
+			StarsPrev:             rs.StarsPrev,
+			Forks:                 rs.Forks,
+			Contributors:          rs.Contributors,
+			ContributorsPrev:      rs.ContributorsPrev,
+			GrowthScore:           rs.GrowthScore,
+			NormalizedGrowthScore: rs.NormalizedGrowthScore,
+			StarVelocity:          rs.StarVelocity,
+			StarAcceleration:      rs.StarAcceleration,
+			PRVelocity:            rs.PRVelocity,
+			IssueVelocity:         rs.IssueVelocity,
+			ContributorGrowth:     rs.ContributorGrowth,
+			MergedPRs7d:           rs.MergedPRs7d,
+			NewIssues7d:           rs.NewIssues7d,
+			LastCollectedAt:       rs.LastCollected.Format(time.RFC3339),
+			ETag:                  rs.ETag,
+			LastModified:          rs.LastModified,
+			Status:                "pending",
+			FirstSeenAt:           time.Now().Format(time.RFC3339),
+		}
+
+		if err := d.db.SyncScanData(record); err != nil {
+			logging.Error("failed to sync repo to database", "repo", fullName, "error", err)
+			continue
+		}
+		synced++
+	}
+
+	if synced > 0 {
+		logging.Info("synced repos from store to database", "count", synced)
 	}
 }
 

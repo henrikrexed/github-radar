@@ -8,13 +8,17 @@ import (
 )
 
 // RepoRecord represents a repository row in the database.
+//
+// Note: description and topics are intentionally NOT persisted (ISI-744,
+// folded into the v3 taxonomy migration). They are live-fetched from the
+// GitHub API at classification time, so the scanner schema stays truthful
+// and avoids carrying misleading empty strings. See docs/architecture.md.
 type RepoRecord struct {
 	ID                    int64
 	FullName              string
 	Owner                 string
 	Name                  string
 	Language              string
-	Description           string
 	Stars                 int
 	StarsPrev             int
 	Forks                 int
@@ -36,7 +40,6 @@ type RepoRecord struct {
 	CreatedAt             string
 	FirstSeenAt           string
 	LastCollectedAt       string
-	Topics                string // comma-separated
 	Status                string
 	ETag                  string
 	LastModified          string
@@ -49,6 +52,16 @@ type RepoRecord struct {
 	ModelUsed          string
 	ForceCategory      string
 	Excluded           int
+
+	// v3 taxonomy fields (ISI-714 / ISI-786). PrimarySubcategory holds the
+	// 2nd-level token (e.g. "agents") under the closed (cat, sub) matrix in
+	// taxonomy_map.go. PrimaryCategoryLegacy is the pre-migration flat slug
+	// (e.g. "ai-agents") preserved for the 30-day backward-compat window.
+	// ForceSubcategory pairs with ForceCategory when an admin pins both
+	// halves of a (category, subcategory) pair.
+	PrimarySubcategory    string
+	PrimaryCategoryLegacy string
+	ForceSubcategory      string
 }
 
 // GetRepo returns a repository by full_name. Returns nil if not found.
@@ -58,7 +71,7 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 
 	r := &RepoRecord{}
 	err := d.db.QueryRow(`
-		SELECT id, full_name, owner, name, language, description,
+		SELECT id, full_name, owner, name, language,
 			stars, stars_prev, forks, open_issues, open_prs,
 			contributors, contributors_prev,
 			growth_score, normalized_growth_score,
@@ -67,11 +80,12 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 			merged_prs_7d, new_issues_7d,
 			latest_release, latest_release_date,
 			created_at, first_seen_at, last_collected_at,
-			topics, status, etag, last_modified,
+			status, etag, last_modified,
 			primary_category, category_confidence, readme_hash,
-			classified_at, model_used, force_category, excluded
+			classified_at, model_used, force_category, excluded,
+			primary_subcategory, primary_category_legacy, force_subcategory
 		FROM repos WHERE full_name = ?`, fullName).Scan(
-		&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language, &r.Description,
+		&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language,
 		&r.Stars, &r.StarsPrev, &r.Forks, &r.OpenIssues, &r.OpenPRs,
 		&r.Contributors, &r.ContributorsPrev,
 		&r.GrowthScore, &r.NormalizedGrowthScore,
@@ -80,9 +94,10 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 		&r.MergedPRs7d, &r.NewIssues7d,
 		&r.LatestRelease, &r.LatestReleaseDate,
 		&r.CreatedAt, &r.FirstSeenAt, &r.LastCollectedAt,
-		&r.Topics, &r.Status, &r.ETag, &r.LastModified,
+		&r.Status, &r.ETag, &r.LastModified,
 		&r.PrimaryCategory, &r.CategoryConfidence, &r.ReadmeHash,
 		&r.ClassifiedAt, &r.ModelUsed, &r.ForceCategory, &r.Excluded,
+		&r.PrimarySubcategory, &r.PrimaryCategoryLegacy, &r.ForceSubcategory,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -100,7 +115,7 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 
 	_, err := d.db.Exec(`
 		INSERT INTO repos (
-			full_name, owner, name, language, description,
+			full_name, owner, name, language,
 			stars, stars_prev, forks, open_issues, open_prs,
 			contributors, contributors_prev,
 			growth_score, normalized_growth_score,
@@ -109,11 +124,12 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			merged_prs_7d, new_issues_7d,
 			latest_release, latest_release_date,
 			created_at, first_seen_at, last_collected_at,
-			topics, status, etag, last_modified,
+			status, etag, last_modified,
 			primary_category, category_confidence, readme_hash,
-			classified_at, model_used, force_category, excluded
+			classified_at, model_used, force_category, excluded,
+			primary_subcategory, primary_category_legacy, force_subcategory
 		) VALUES (
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?,
 			?, ?, ?, ?, ?,
 			?, ?,
 			?, ?,
@@ -121,15 +137,15 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			?, ?, ?,
 			?, ?,
 			?, ?,
+			?, ?, ?,
+			?, ?, ?,
 			?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?,
-			?, ?, ?, ?
+			?, ?, ?
 		) ON CONFLICT(full_name) DO UPDATE SET
 			owner = excluded.owner,
 			name = excluded.name,
 			language = excluded.language,
-			description = excluded.description,
 			stars = excluded.stars,
 			stars_prev = excluded.stars_prev,
 			forks = excluded.forks,
@@ -150,7 +166,6 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			latest_release_date = excluded.latest_release_date,
 			created_at = excluded.created_at,
 			last_collected_at = excluded.last_collected_at,
-			topics = excluded.topics,
 			status = excluded.status,
 			etag = excluded.etag,
 			last_modified = excluded.last_modified,
@@ -160,8 +175,11 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			classified_at = excluded.classified_at,
 			model_used = excluded.model_used,
 			force_category = excluded.force_category,
-			excluded = excluded.excluded`,
-		r.FullName, r.Owner, r.Name, r.Language, r.Description,
+			excluded = excluded.excluded,
+			primary_subcategory = excluded.primary_subcategory,
+			primary_category_legacy = excluded.primary_category_legacy,
+			force_subcategory = excluded.force_subcategory`,
+		r.FullName, r.Owner, r.Name, r.Language,
 		r.Stars, r.StarsPrev, r.Forks, r.OpenIssues, r.OpenPRs,
 		r.Contributors, r.ContributorsPrev,
 		r.GrowthScore, r.NormalizedGrowthScore,
@@ -170,9 +188,10 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 		r.MergedPRs7d, r.NewIssues7d,
 		r.LatestRelease, r.LatestReleaseDate,
 		r.CreatedAt, r.FirstSeenAt, r.LastCollectedAt,
-		r.Topics, r.Status, r.ETag, r.LastModified,
+		r.Status, r.ETag, r.LastModified,
 		r.PrimaryCategory, r.CategoryConfidence, r.ReadmeHash,
 		r.ClassifiedAt, r.ModelUsed, r.ForceCategory, r.Excluded,
+		r.PrimarySubcategory, r.PrimaryCategoryLegacy, r.ForceSubcategory,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting repo %s: %w", r.FullName, err)
@@ -188,7 +207,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 
 	_, err := d.db.Exec(`
 		INSERT INTO repos (
-			full_name, owner, name, language, description,
+			full_name, owner, name, language,
 			stars, stars_prev, forks, open_issues, open_prs,
 			contributors, contributors_prev,
 			growth_score, normalized_growth_score,
@@ -197,9 +216,9 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 			merged_prs_7d, new_issues_7d,
 			latest_release, latest_release_date,
 			created_at, first_seen_at, last_collected_at,
-			topics, status, etag, last_modified
+			status, etag, last_modified
 		) VALUES (
-			?, ?, ?, ?, ?,
+			?, ?, ?, ?,
 			?, ?, ?, ?, ?,
 			?, ?,
 			?, ?,
@@ -208,7 +227,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 			?, ?,
 			?, ?,
 			?, ?, ?,
-			?, ?, ?, ?
+			?, ?, ?
 		) ON CONFLICT(full_name) DO UPDATE SET
 			stars = excluded.stars,
 			stars_prev = excluded.stars_prev,
@@ -229,7 +248,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 			last_collected_at = excluded.last_collected_at,
 			etag = excluded.etag,
 			last_modified = excluded.last_modified`,
-		r.FullName, r.Owner, r.Name, r.Language, r.Description,
+		r.FullName, r.Owner, r.Name, r.Language,
 		r.Stars, r.StarsPrev, r.Forks, r.OpenIssues, r.OpenPRs,
 		r.Contributors, r.ContributorsPrev,
 		r.GrowthScore, r.NormalizedGrowthScore,
@@ -238,7 +257,7 @@ func (d *DB) SyncScanData(r *RepoRecord) error {
 		r.MergedPRs7d, r.NewIssues7d,
 		r.LatestRelease, r.LatestReleaseDate,
 		r.CreatedAt, r.FirstSeenAt, r.LastCollectedAt,
-		r.Topics, r.Status, r.ETag, r.LastModified,
+		r.Status, r.ETag, r.LastModified,
 	)
 	if err != nil {
 		return fmt.Errorf("syncing scan data for %s: %w", r.FullName, err)
@@ -258,12 +277,30 @@ func (d *DB) DeleteRepo(fullName string) error {
 	return nil
 }
 
+// repoSelectColumns is the explicit column list used by queryRepos. It pins
+// the ordering to what the Scan in queryRepos expects, which means schema
+// additions (e.g. taxonomy v2 columns) do not silently break existing
+// SELECT * call sites.
+const repoSelectColumns = `id, full_name, owner, name, language,
+		stars, stars_prev, forks, open_issues, open_prs,
+		contributors, contributors_prev,
+		growth_score, normalized_growth_score,
+		star_velocity, star_acceleration,
+		pr_velocity, issue_velocity, contributor_growth,
+		merged_prs_7d, new_issues_7d,
+		latest_release, latest_release_date,
+		created_at, first_seen_at, last_collected_at,
+		status, etag, last_modified,
+		primary_category, category_confidence, readme_hash,
+		classified_at, model_used, force_category, excluded,
+		primary_subcategory, primary_category_legacy, force_subcategory`
+
 // AllRepos returns all non-excluded repository records.
 func (d *DB) AllRepos() ([]RepoRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	return d.queryRepos("SELECT * FROM repos WHERE excluded = 0 ORDER BY full_name")
+	return d.queryRepos("SELECT " + repoSelectColumns + " FROM repos WHERE excluded = 0 ORDER BY full_name")
 }
 
 // AllReposIncludeExcluded returns all repository records including excluded ones.
@@ -271,17 +308,75 @@ func (d *DB) AllReposIncludeExcluded() ([]RepoRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	return d.queryRepos("SELECT * FROM repos ORDER BY full_name")
+	return d.queryRepos("SELECT " + repoSelectColumns + " FROM repos ORDER BY full_name")
 }
 
 // ReposByCategory returns repos matching a given primary_category.
+//
+// Deprecated: post-v3 taxonomy migration (ISI-714), primary_category holds the
+// top-level domain (e.g. "ai") rather than the legacy flat value (e.g.
+// "ai-agents"). Callers passing legacy flat strings will get zero rows. Prefer:
+//
+//   - ReposByCategoryPair(category, subcategory) for the new (cat, sub) tuple.
+//   - ReposByLegacyCategory(legacy) when the caller still has a flat legacy
+//     value (e.g. "ai-agents", "frontend-ui") — selects via the
+//     repos_legacy_v1 view so round-trip is preserved.
+//
+// Kept for backward compatibility with callers that already pass top-level
+// values (e.g. "observability", "ai"); semantically equivalent to
+// `ReposByLegacyCategory(category)` for the bijective subset where a top-level
+// value happens to also be a legacy flat value.
 func (d *DB) ReposByCategory(category string) ([]RepoRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	return d.queryRepos(
-		"SELECT * FROM repos WHERE primary_category = ? AND excluded = 0 ORDER BY full_name",
+		"SELECT "+repoSelectColumns+" FROM repos WHERE primary_category = ? AND excluded = 0 ORDER BY full_name",
 		category,
+	)
+}
+
+// ReposByCategoryPair returns non-excluded repos matching the given
+// (primary_category, primary_subcategory) tuple under the v3 taxonomy schema
+// (ISI-714). This is the preferred read path for code that knows the new
+// 2-level taxonomy.
+//
+// Both arguments are matched exactly; pass the top-level domain (e.g. "ai")
+// and the subcategory token (e.g. "agents"). To enumerate repos under a
+// top-level domain regardless of subcategory, use ReposByCategory.
+func (d *DB) ReposByCategoryPair(category, subcategory string) ([]RepoRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.queryRepos(
+		"SELECT "+repoSelectColumns+" FROM repos WHERE primary_category = ? AND primary_subcategory = ? AND excluded = 0 ORDER BY full_name",
+		category,
+		subcategory,
+	)
+}
+
+// ReposByLegacyCategory returns non-excluded repos whose pre-v3 flat category
+// matched the given legacy value (e.g. "ai-agents", "frontend-ui"). It selects
+// via the repos_legacy_v1 compatibility view, which exposes the snapshot
+// column primary_category_legacy as legacy_category — see
+// internal/database/schema_migration.go for the view definition and the
+// round-trip rationale.
+//
+// Use this when a caller still has a flat legacy string and you don't want to
+// re-derive (cat, subcat) from the lookup table. Prefer ReposByCategoryPair
+// for new code.
+//
+// Note: the returned RepoRecord.PrimaryCategory holds the *new* top-level
+// domain (e.g. "ai"), not the legacy flat value passed in. If the caller needs
+// the legacy form on the row, read it from primary_category_legacy directly
+// (added to RepoRecord by T3 WS2).
+func (d *DB) ReposByLegacyCategory(legacy string) ([]RepoRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.queryRepos(
+		"SELECT "+repoSelectColumns+" FROM repos_legacy_v1 WHERE legacy_category = ? AND excluded = 0 ORDER BY full_name",
+		legacy,
 	)
 }
 
@@ -291,7 +386,7 @@ func (d *DB) ReposByStatus(status string) ([]RepoRecord, error) {
 	defer d.mu.RUnlock()
 
 	return d.queryRepos(
-		"SELECT * FROM repos WHERE status = ? AND excluded = 0 ORDER BY full_name",
+		"SELECT "+repoSelectColumns+" FROM repos WHERE status = ? AND excluded = 0 ORDER BY full_name",
 		status,
 	)
 }
@@ -337,7 +432,7 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 	for rows.Next() {
 		var r RepoRecord
 		if err := rows.Scan(
-			&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language, &r.Description,
+			&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language,
 			&r.Stars, &r.StarsPrev, &r.Forks, &r.OpenIssues, &r.OpenPRs,
 			&r.Contributors, &r.ContributorsPrev,
 			&r.GrowthScore, &r.NormalizedGrowthScore,
@@ -346,9 +441,10 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 			&r.MergedPRs7d, &r.NewIssues7d,
 			&r.LatestRelease, &r.LatestReleaseDate,
 			&r.CreatedAt, &r.FirstSeenAt, &r.LastCollectedAt,
-			&r.Topics, &r.Status, &r.ETag, &r.LastModified,
+			&r.Status, &r.ETag, &r.LastModified,
 			&r.PrimaryCategory, &r.CategoryConfidence, &r.ReadmeHash,
 			&r.ClassifiedAt, &r.ModelUsed, &r.ForceCategory, &r.Excluded,
+			&r.PrimarySubcategory, &r.PrimaryCategoryLegacy, &r.ForceSubcategory,
 		); err != nil {
 			return nil, fmt.Errorf("scanning repo row: %w", err)
 		}
@@ -358,17 +454,25 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 }
 
 // ReposNeedingClassification returns repos that are not excluded and have no
-// force_category override, and either have no category yet, or have status
-// 'needs_reclassify' or 'needs_review' (low-confidence results eligible for re-run).
+// force_category override, and that need classification by one of:
+//   - no category yet (newly scanned), or
+//   - status in ('needs_reclassify','needs_review'), or
+//   - never-classified rows the v3 taxonomy backfill stamped with primary_category='other'
+//     (classified_at='' AND status='pending'); without this clause those rows are
+//     permanent zombies because both other branches miss them (ISI-787).
 func (d *DB) ReposNeedingClassification() ([]RepoRecord, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	return d.queryRepos(`
-		SELECT * FROM repos
+		SELECT ` + repoSelectColumns + ` FROM repos
 		WHERE excluded = 0
 		  AND force_category = ''
-		  AND (primary_category = '' OR status IN ('needs_reclassify', 'needs_review'))
+		  AND (
+		    primary_category = ''
+		    OR status IN ('needs_reclassify', 'needs_review')
+		    OR (status = 'pending' AND classified_at = '')
+		  )
 		ORDER BY full_name`)
 }
 
@@ -408,7 +512,7 @@ func (d *DB) ClassifiedRepos() ([]RepoRecord, error) {
 	defer d.mu.RUnlock()
 
 	return d.queryRepos(`
-		SELECT * FROM repos
+		SELECT ` + repoSelectColumns + ` FROM repos
 		WHERE excluded = 0
 		  AND force_category = ''
 		  AND primary_category != ''
@@ -451,6 +555,216 @@ func (d *DB) MarkAllNeedsReclassify() (int64, error) {
 		return 0, fmt.Errorf("marking repos needs_reclassify: %w", err)
 	}
 	return result.RowsAffected()
+}
+
+// NeedsReclassifyCount returns the number of non-excluded repos currently in
+// status='needs_reclassify'. Surfaced as the `repos_needs_reclassify_total`
+// gauge on metrics flush + daemon shutdown so operators can see when the
+// drain backlog is growing (ISI-773 regression guard).
+func (d *DB) NeedsReclassifyCount() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var n int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM repos WHERE excluded = 0 AND status = 'needs_reclassify'`,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting needs_reclassify repos: %w", err)
+	}
+	return n, nil
+}
+
+// DrainReport is the structured output of DrainNeedsReclassify. It captures
+// what was examined, what was drained, and what was held — sufficient for
+// the admin CLI to render dry-run preview and post-run report.
+type DrainReport struct {
+	// Examined is the count of rows in status='needs_reclassify' (excluded=0)
+	// before any update. Equals Drained + HeldInSink + HeldOther.
+	Examined int
+	// Drained is the count of rows flipped status='needs_reclassify' →
+	// 'active' (or in dry-run mode, the count that would be flipped).
+	Drained int
+	// HeldInSink is the count of rows left in needs_reclassify because they
+	// landed in the (other,*) refusal sink (needs_review=1). These are the
+	// rows the v3 backfill flagged for human triage; the drain leaves them
+	// alone.
+	HeldInSink int
+	// HeldOther is any unexpected residual: rows still in needs_reclassify
+	// that don't match either the drainable predicate or the refusal-sink
+	// predicate. Should be 0 in steady state. Operations should investigate
+	// if non-zero (e.g. legacy rows missing primary_subcategory).
+	HeldOther int
+	// ByCategory groups Drained by primary_category for the report header.
+	ByCategory map[string]int
+	// DryRun is true when the report was produced by a dry-run pass (no
+	// rows mutated, no backup written).
+	DryRun bool
+	// BackupPath is the absolute path to the pre-drain backup file. Empty
+	// in dry-run mode.
+	BackupPath string
+}
+
+// DrainNeedsReclassify performs the deterministic drain of repos stuck in
+// status='needs_reclassify' that already have valid post-v3 (category,
+// subcategory) tuples and are not in the refusal sink. See
+// [ISI-773 plan](/ISI/issues/ISI-773#document-plan) for the rationale.
+//
+// Mechanism: a single UPDATE under BEGIN IMMEDIATE, preceded by a VACUUM
+// INTO backup at <db_path>.preDrain.bak. Drainable predicate:
+//
+//	excluded = 0
+//	AND status = 'needs_reclassify'
+//	AND primary_category != ''
+//	AND primary_subcategory != ''
+//	AND primary_category != 'other'
+//	AND needs_review = 0
+//
+// Rows that don't match (i.e. (other,*) with needs_review=1) stay flagged
+// for human triage. The function is safe to re-run: a second pass drains 0.
+//
+// In dry-run mode (dryRun=true) no backup is written and no rows are
+// mutated; the report's Drained / HeldInSink / HeldOther counts come from
+// SELECT-based previews so the operator can sanity-check the plan before
+// the for-real run.
+//
+// limit, when > 0, caps the number of drained rows in the UPDATE (used by
+// ops for staged drains). When limit <= 0 the drain is unrestricted.
+func (d *DB) DrainNeedsReclassify(dryRun bool, limit int) (DrainReport, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	report := DrainReport{
+		DryRun:     dryRun,
+		ByCategory: make(map[string]int),
+	}
+
+	// Examined: total in needs_reclassify (excluded=0).
+	if err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM repos WHERE excluded = 0 AND status = 'needs_reclassify'`,
+	).Scan(&report.Examined); err != nil {
+		return report, fmt.Errorf("examined count: %w", err)
+	}
+
+	// HeldInSink: in refusal sink, left alone.
+	if err := d.db.QueryRow(`
+		SELECT COUNT(*) FROM repos
+		WHERE excluded = 0 AND status = 'needs_reclassify'
+		  AND primary_category = 'other'
+		  AND needs_review = 1`,
+	).Scan(&report.HeldInSink); err != nil {
+		return report, fmt.Errorf("held-in-sink count: %w", err)
+	}
+
+	// Drainable preview: rows that match the drain predicate.
+	drainPredicate := `
+		excluded = 0
+		AND status = 'needs_reclassify'
+		AND primary_category != ''
+		AND primary_subcategory != ''
+		AND primary_category != 'other'
+		AND needs_review = 0`
+
+	var previewDrain int
+	if err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM repos WHERE` + drainPredicate,
+	).Scan(&previewDrain); err != nil {
+		return report, fmt.Errorf("drainable preview count: %w", err)
+	}
+	if limit > 0 && previewDrain > limit {
+		previewDrain = limit
+	}
+
+	// Held-other: any residual we didn't account for.
+	report.HeldOther = report.Examined - previewDrain - report.HeldInSink
+	if report.HeldOther < 0 {
+		// Shouldn't happen — sets are disjoint by construction. Treat as 0
+		// and proceed; the per-category aggregation will still be honest.
+		report.HeldOther = 0
+	}
+
+	// ByCategory aggregation for drainable preview (used by both dry-run
+	// and live runs to render the report header).
+	byCatRows, err := d.db.Query(`
+		SELECT primary_category, COUNT(*) FROM repos
+		WHERE` + drainPredicate + `
+		GROUP BY primary_category
+		ORDER BY primary_category`)
+	if err != nil {
+		return report, fmt.Errorf("by-category preview: %w", err)
+	}
+	defer byCatRows.Close()
+	for byCatRows.Next() {
+		var cat string
+		var n int
+		if err := byCatRows.Scan(&cat, &n); err != nil {
+			return report, fmt.Errorf("scanning by-category row: %w", err)
+		}
+		report.ByCategory[cat] = n
+	}
+	if err := byCatRows.Err(); err != nil {
+		return report, fmt.Errorf("iterating by-category rows: %w", err)
+	}
+
+	if dryRun {
+		report.Drained = previewDrain
+		return report, nil
+	}
+
+	// Real run: take pre-tx backup (file-backed DBs only). Reuse the same
+	// VACUUM INTO helper that the v3 taxonomy migration uses
+	// (schema_migration.go), so the drain inherits the same WAL-safe
+	// snapshot semantics + stale-file handling.
+	if d.path != "" && !strings.HasPrefix(d.path, ":") && !strings.Contains(d.path, ":memory:") {
+		backupPath := d.path + ".preDrain.bak"
+		if err := d.vacuumIntoBackup(backupPath); err != nil {
+			return report, fmt.Errorf("writing pre-drain backup %s: %w", backupPath, err)
+		}
+		report.BackupPath = backupPath
+	}
+
+	// Run the UPDATE in a transaction. Use a positional limit when set; the
+	// LIMIT clause on UPDATE is supported by SQLite when SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+	// is compiled in. modernc.org/sqlite ships with it enabled.
+	tx, err := d.db.Begin()
+	if err != nil {
+		return report, fmt.Errorf("begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// modernc.org/sqlite does not enable SQLITE_ENABLE_UPDATE_DELETE_LIMIT,
+	// so `UPDATE ... LIMIT N` is a syntax error. We get the same effect by
+	// gating on a primary-key subquery whose row set is bounded by LIMIT.
+	var result sql.Result
+	if limit > 0 {
+		result, err = tx.Exec(
+			`UPDATE repos SET status = 'active' WHERE id IN (
+				SELECT id FROM repos WHERE`+drainPredicate+`
+				ORDER BY id LIMIT ?)`,
+			limit,
+		)
+	} else {
+		result, err = tx.Exec(`UPDATE repos SET status = 'active' WHERE` + drainPredicate)
+	}
+	if err != nil {
+		return report, fmt.Errorf("drain UPDATE: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return report, fmt.Errorf("rows affected: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return report, fmt.Errorf("commit: %w", err)
+	}
+	committed = true
+
+	report.Drained = int(rows)
+	return report, nil
 }
 
 // Metadata operations
@@ -612,15 +926,66 @@ func (d *DB) AllRepoStatesMap() (map[string]RepoRecord, error) {
 	return result, nil
 }
 
-// TopicsSlice parses the comma-separated topics string into a slice.
-func (r *RepoRecord) TopicsSlice() []string {
-	if r.Topics == "" {
-		return nil
-	}
-	return strings.Split(r.Topics, ",")
+// Topics + description are no longer persisted (ISI-744, folded into the
+// taxonomy v3 migration). The classifier live-fetches them from the GitHub
+// API via Pipeline.ClassifySingle; consumers that previously read
+// repo.Topics / repo.Description should follow the same pattern.
+
+// AuditOtherCandidate is the minimal projection used by the monthly
+// `<cat>/other` drift audit (ISI-751). Topics are not in this struct
+// because they are live-fetched from GitHub at audit time per ISI-743.
+type AuditOtherCandidate struct {
+	FullName        string
+	PrimaryCategory string
+	Confidence      float64
 }
 
-// SetTopicsFromSlice joins a slice into the comma-separated topics string.
-func (r *RepoRecord) SetTopicsFromSlice(topics []string) {
-	r.Topics = strings.Join(topics, ",")
+// AuditOtherDriftCandidates returns rows where the v3-taxonomy
+// classifier has parked the repo in `<cat>/other`, scoped per the
+// audit denominator rules (plan §2 + §7): non-curated, currently
+// active. Returned in deterministic order by full_name.
+//
+// Excludes are NOT explicitly filtered — the schema's `excluded` flag
+// applies elsewhere (e.g. taxonomy-rule classification overrides) and
+// curated/inactive repos are excluded from BOTH numerator and
+// denominator via the existing `is_curated_list` and `status` columns.
+func (d *DB) AuditOtherDriftCandidates() ([]AuditOtherCandidate, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT full_name, primary_category, category_confidence
+		FROM repos
+		WHERE primary_subcategory = 'other'
+		  AND is_curated_list = 0
+		  AND status = 'active'
+		ORDER BY full_name`)
+	if err != nil {
+		return nil, fmt.Errorf("querying audit other-drift candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AuditOtherCandidate
+	for rows.Next() {
+		var c AuditOtherCandidate
+		if err := rows.Scan(&c.FullName, &c.PrimaryCategory, &c.Confidence); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// AuditActiveNonCuratedCount returns the audit denominator (plan §7):
+// `is_curated_list = 0 AND status = 'active'`. Curated lists and
+// inactive/archived repos are excluded.
+func (d *DB) AuditActiveNonCuratedCount() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var n int
+	err := d.db.QueryRow(`SELECT COUNT(*) FROM repos WHERE is_curated_list = 0 AND status = 'active'`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("querying active+non-curated count: %w", err)
+	}
+	return n, nil
 }

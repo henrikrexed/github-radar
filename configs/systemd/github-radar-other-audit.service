@@ -1,0 +1,23 @@
+[Unit]
+Description=github-radar monthly <cat>/other drift audit (T9 / ISI-720)
+Documentation=https://example.invalid/ISI-720
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Required for --file mode (Paperclip API auto-file).
+# Set these in ~/.config/systemd/user/github-radar-other-audit.service.d/env.conf
+# or via `systemctl --user edit github-radar-other-audit.service`.
+#   PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID
+#   GITHUB_RADAR_PROJECT_ID, GITHUB_RADAR_AUDIT_ASSIGNEE_AGENT
+#   GITHUB_RADAR_AUDIT_PARENT_ISSUE_ID
+#   (and the standard github-radar config: $HOME/.config/github-radar/config.yaml)
+ExecStart=%h/.local/bin/github-radar audit other-drift --file
+Nice=10
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/github-radar
+
+[Install]
+WantedBy=default.target
