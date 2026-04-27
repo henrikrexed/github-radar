@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func TestTierConfigFromYAML_Overrides(t *testing.T) {
 func TestAPIObserver_NilExporter(t *testing.T) {
 	// Observer with nil exporter should be a no-op; we just verify it
 	// doesn't panic.
-	obs := newAPIObserver(nil, nil)
+	obs := newAPIObserver(context.TODO(), nil)
 	obs.ObserveCall("repo", "ok")
 	obs.ObserveRateLimit(5000, 4000, time.Now())
 }
