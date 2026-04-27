@@ -82,6 +82,7 @@ type Exporter struct {
 	apiRateResetSecsGauge metric.Int64Gauge
 	apiCallsCounter       metric.Int64Counter
 	refreshTierReposGauge metric.Int64Gauge
+	scanDurationHist      metric.Float64Histogram
 }
 
 // NewExporter creates a new metrics exporter.
@@ -364,6 +365,20 @@ func (e *Exporter) createInstruments() error {
 		return err
 	}
 
+	// Scan-cycle wallclock distribution. Used by the T5 prod canary
+	// decision tree (ISI-792 / ISI-716): "p95 latency >2× baseline" is
+	// one of the halt criteria, and that requires a histogram, not just
+	// per-cycle slog lines. Attribute "path" is one of {legacy, bulk,
+	// canary} so dashboards can split-screen the two paths during the
+	// canary stages.
+	e.scanDurationHist, err = e.meter.Float64Histogram("github.scan.duration",
+		metric.WithDescription("Wallclock duration of a single scan cycle"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -511,6 +526,20 @@ func (e *Exporter) RecordRefreshTierHistogram(ctx context.Context, counts map[st
 			attribute.String("tier", tier),
 		))
 	}
+}
+
+// RecordScanDuration records one observation of the scan-cycle wallclock
+// histogram. `path` is one of "legacy" (pre-T5), "bulk" (T5 full rollout),
+// or "canary" (T5 partial rollout for ISI-792 staged prod canary). It is
+// safe to call with a nil exporter receiver — the daemon checks for that
+// before calling, but defensively we no-op if instruments aren't built.
+func (e *Exporter) RecordScanDuration(ctx context.Context, d time.Duration, path string) {
+	if e == nil || e.scanDurationHist == nil {
+		return
+	}
+	e.scanDurationHist.Record(ctx, d.Seconds(), metric.WithAttributes(
+		attribute.String("path", path),
+	))
 }
 
 // Flush forces an immediate export of all pending metrics.

@@ -410,13 +410,22 @@ func (d *Daemon) runScan() {
 		}
 	}
 
-	// Run scan — tiered refresh path if bulk fetch is enabled, else the
-	// legacy single-pass REST+conditional path.
+	// Run scan — three paths:
+	//   - canary: bulk_fetch_enabled=true AND bulk_fetch_canary_full_names is
+	//     non-empty → listed repos go through the tiered/bulk path, the rest
+	//     stay on the legacy REST single-pass path. Used for staged rollout
+	//     (Stage A/B of the T5 prod canary, ISI-716/ISI-792).
+	//   - bulk: bulk_fetch_enabled=true AND list empty → all repos on the
+	//     tiered/bulk path (Stage C / steady state).
+	//   - legacy: bulk_fetch_enabled=false → pre-T5 single-pass REST.
 	var result *github.ScanResult
 	var err error
-	if d.cfg.GitHub.BulkFetchEnabled {
+	switch {
+	case d.cfg.GitHub.BulkFetchEnabled && len(d.cfg.GitHub.BulkFetchCanaryFullNames) > 0:
+		result, err = d.runCanaryScan(repos)
+	case d.cfg.GitHub.BulkFetchEnabled:
 		result, err = d.runTieredScan(repos)
-	} else {
+	default:
 		result, err = d.scanner.Scan(d.ctx, repos)
 	}
 	if err != nil && err != context.Canceled {
@@ -432,12 +441,20 @@ func (d *Daemon) runScan() {
 			d.exportMetrics()
 		}
 
+		// Record cycle wallclock as a histogram. PM's T5 canary decision
+		// tree (ISI-792) gates on scan p95 latency >2× baseline; logging
+		// alone is not sufficient.
+		scanDur := result.EndTime.Sub(result.StartTime)
+		if d.exporter != nil {
+			d.exporter.RecordScanDuration(d.ctx, scanDur, scanPathLabel(d.cfg.GitHub))
+		}
+
 		logging.Info("scan complete",
 			"total", result.Total,
 			"successful", result.Successful,
 			"failed", result.Failed,
 			"skipped", result.Skipped,
-			"duration", result.EndTime.Sub(result.StartTime))
+			"duration", scanDur)
 	}
 
 	// Run discovery if enabled
@@ -902,6 +919,100 @@ func (d *Daemon) runTieredScan(requested []github.Repo) (*github.ScanResult, err
 
 	combined.EndTime = time.Now()
 	return combined, nil
+}
+
+// runCanaryScan partitions the requested repos into a canary set
+// (matching d.cfg.GitHub.BulkFetchCanaryFullNames, case-insensitive) and
+// a legacy set, then dispatches each to the appropriate scan path:
+//   - canary set → runTieredScan (T5 GraphQL bulk + tiered cadence)
+//   - legacy set → scanner.Scan (pre-T5 REST single-pass)
+//
+// Used for staged prod canary rollout (ISI-792 / ISI-716): Stage A 10%,
+// Stage B 50%, Stage C 100% (Stage C uses an empty list + bulk_fetch
+// flag on, which routes through runTieredScan directly without this
+// partition step).
+func (d *Daemon) runCanaryScan(repos []github.Repo) (*github.ScanResult, error) {
+	canaryRepos, legacyRepos := partitionByCanary(repos, d.cfg.GitHub.BulkFetchCanaryFullNames)
+
+	logging.Info("canary scan planning",
+		"canary_repos", len(canaryRepos),
+		"legacy_repos", len(legacyRepos),
+		"canary_list_size", len(d.cfg.GitHub.BulkFetchCanaryFullNames))
+
+	combined := &github.ScanResult{StartTime: time.Now()}
+
+	// Canary set → tiered/bulk path.
+	if len(canaryRepos) > 0 {
+		cr, err := d.runTieredScan(canaryRepos)
+		if err != nil && err != context.Canceled {
+			logging.Warn("canary tiered scan returned error", "error", err)
+		}
+		if cr != nil {
+			combined.Total += cr.Total
+			combined.Successful += cr.Successful
+			combined.Failed += cr.Failed
+			combined.Skipped += cr.Skipped
+			combined.Updated += cr.Updated
+			combined.FailedRepos = append(combined.FailedRepos, cr.FailedRepos...)
+		}
+	}
+
+	// Legacy set → pre-T5 REST + conditional path.
+	if len(legacyRepos) > 0 {
+		lr, err := d.scanner.Scan(d.ctx, legacyRepos)
+		if err != nil && err != context.Canceled {
+			logging.Warn("canary legacy scan returned error", "error", err)
+		}
+		if lr != nil {
+			combined.Total += lr.Total
+			combined.Successful += lr.Successful
+			combined.Failed += lr.Failed
+			combined.Skipped += lr.Skipped
+			combined.Updated += lr.Updated
+			combined.FailedRepos = append(combined.FailedRepos, lr.FailedRepos...)
+		}
+	}
+
+	combined.EndTime = time.Now()
+	return combined, nil
+}
+
+// scanPathLabel returns the "path" attribute value attached to the
+// github.scan.duration histogram for the cycle just completed. The
+// value mirrors the switch in runScan.
+func scanPathLabel(g config.GithubConfig) string {
+	switch {
+	case g.BulkFetchEnabled && len(g.BulkFetchCanaryFullNames) > 0:
+		return "canary"
+	case g.BulkFetchEnabled:
+		return "bulk"
+	default:
+		return "legacy"
+	}
+}
+
+// partitionByCanary splits repos into (canary, legacy) per the canary
+// full-name list. Matching is case-insensitive and tolerates surrounding
+// whitespace. Pulled out as a pure function so the partition contract
+// is unit-testable without standing up the full Daemon scaffolding.
+func partitionByCanary(repos []github.Repo, canary []string) (canarySet, legacySet []github.Repo) {
+	set := make(map[string]struct{}, len(canary))
+	for _, fn := range canary {
+		key := strings.ToLower(strings.TrimSpace(fn))
+		if key == "" {
+			continue
+		}
+		set[key] = struct{}{}
+	}
+	for _, r := range repos {
+		key := strings.ToLower(r.Owner + "/" + r.Name)
+		if _, ok := set[key]; ok {
+			canarySet = append(canarySet, r)
+		} else {
+			legacySet = append(legacySet, r)
+		}
+	}
+	return canarySet, legacySet
 }
 
 // logWithLevel logs a message at the specified level.

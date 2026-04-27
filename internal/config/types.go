@@ -56,6 +56,15 @@ type GithubConfig struct {
 	// pre-T5 single-interval REST scan.
 	BulkFetchEnabled bool `yaml:"bulk_fetch_enabled"`
 
+	// BulkFetchCanaryFullNames optionally restricts the bulk-fetch /
+	// tiered path to a subset of repos by `owner/name`. When
+	// BulkFetchEnabled is true and this list is non-empty, only listed
+	// repos use the new path; all others stay on the legacy REST
+	// single-pass path. Used for staged canary rollout (Stage A 10%,
+	// Stage B 50%, Stage C 100% = empty list + flag on). Repo names are
+	// matched case-insensitively to mirror GitHub's behaviour.
+	BulkFetchCanaryFullNames []string `yaml:"bulk_fetch_canary_full_names"`
+
 	// Tiering overrides the default refresh cadence; leave zero to use
 	// the plan defaults (500 hot @ 1h, 1500 warm @ 4h, tail cold @ 12h,
 	// new-repo window 48h).

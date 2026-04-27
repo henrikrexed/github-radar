@@ -4,6 +4,12 @@
 github:
   token: ${GITHUB_TOKEN}
   rate_limit: 4000
+  # T5 / ISI-716 — GraphQL bulk fetch + tiered refresh cadence.
+  # bulk_fetch_enabled: true
+  # bulk_fetch_canary_full_names:                    # optional canary subset
+  #   - kubernetes/kubernetes                        # only these repos hit the
+  #   - hashicorp/vault                              # T5 path; rest stay legacy
+  # tiering: {}                                      # plan defaults: 500 hot @1h, 1500 warm @4h, tail cold @12h
 
 otel:
   endpoint: ${OTEL_ENDPOINT:-http://otel-collector:4318}
