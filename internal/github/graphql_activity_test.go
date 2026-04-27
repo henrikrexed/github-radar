@@ -2,7 +2,6 @@ package github
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -381,16 +380,5 @@ func TestScanBulk_FallsBackToRESTWhenTruncated(t *testing.T) {
 	if counter.pulls == 0 || counter.issues == 0 || counter.contributors == 0 || counter.releases == 0 {
 		t.Errorf("expected REST fallback to fire all 4 sub-calls, got pulls=%d issues=%d contributors=%d releases=%d",
 			counter.pulls, counter.issues, counter.contributors, counter.releases)
-	}
-}
-
-// jsonOK is a small testing helper to keep stub bodies compact.
-//
-//nolint:unused
-func jsonOK(t *testing.T, w http.ResponseWriter, v any) {
-	t.Helper()
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		t.Fatalf("encoding stub body: %v", err)
 	}
 }
