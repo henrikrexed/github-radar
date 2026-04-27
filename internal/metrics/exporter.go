@@ -280,6 +280,15 @@ type RepoMetrics struct {
 	Language   string
 	Categories []string
 
+	// v3 taxonomy attributes (ISI-714 / ISI-786). Subcategory is the v3
+	// 2nd-level token. CategoryLegacy is the pre-migration flat slug
+	// (e.g. "ai-agents") emitted for the time-boxed 30-day backward-compat
+	// window. Both are emitted unconditionally — even when empty — so the
+	// dashboard sees a stable attribute shape across rows instead of
+	// silently-dropped dimensions.
+	Subcategory    string
+	CategoryLegacy string
+
 	Stars        int
 	Forks        int
 	OpenIssues   int
@@ -295,9 +304,11 @@ type RepoMetrics struct {
 	ContributorGrowth float64
 }
 
-// RecordRepoMetrics records all metrics for a repository.
-func (e *Exporter) RecordRepoMetrics(ctx context.Context, m RepoMetrics) {
-	// Build common attributes
+// attributes builds the OTel attribute set for a RepoMetrics row. Extracted
+// from RecordRepoMetrics so the attribute shape (especially the v3 subcategory
+// + category_legacy emission added in ISI-786) can be asserted directly in
+// unit tests without standing up the full meter provider pipeline.
+func (m RepoMetrics) attributes() []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("repo_owner", m.Owner),
 		attribute.String("repo_name", m.Name),
@@ -308,7 +319,7 @@ func (e *Exporter) RecordRepoMetrics(ctx context.Context, m RepoMetrics) {
 		attrs = append(attrs, attribute.String("language", m.Language))
 	}
 
-	// Add categories as a comma-separated string
+	// Add categories as a comma-separated string.
 	if len(m.Categories) > 0 {
 		categoryStr := ""
 		for i, cat := range m.Categories {
@@ -320,7 +331,22 @@ func (e *Exporter) RecordRepoMetrics(ctx context.Context, m RepoMetrics) {
 		attrs = append(attrs, attribute.String("category", categoryStr))
 	}
 
-	attrSet := metric.WithAttributes(attrs...)
+	// ISI-714 / ISI-786: emit v3 subcategory + legacy attributes unconditionally
+	// so every github.radar.* series carries a stable attribute shape during the
+	// 30-day backward-compat window. Gating these on non-empty would silently
+	// drop the dimension on rows that haven't been re-classified yet — the exact
+	// regression Observability Agent surfaced on the dev tenant.
+	attrs = append(attrs,
+		attribute.String("subcategory", m.Subcategory),
+		attribute.String("category_legacy", m.CategoryLegacy),
+	)
+
+	return attrs
+}
+
+// RecordRepoMetrics records all metrics for a repository.
+func (e *Exporter) RecordRepoMetrics(ctx context.Context, m RepoMetrics) {
+	attrSet := metric.WithAttributes(m.attributes()...)
 
 	// Record core metrics
 	e.starsGauge.Record(ctx, int64(m.Stars), attrSet)

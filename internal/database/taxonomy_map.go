@@ -108,6 +108,47 @@ func LookupLegacyCategory(legacy string) TaxonomyPair {
 	return TaxonomyPair{Category: "other", Subcategory: "other"}
 }
 
+// ResolveTaxonomy returns the (category, subcategory, legacy) triple to emit
+// for a repo, honoring force_* overrides and gracefully handling rows that
+// still hold pre-v3 flat values in primary_category. ISI-786.
+//
+// Resolution rules:
+//
+//   - force_category set → category = ForceCategory, subcategory =
+//     ForceSubcategory, legacy = PrimaryCategoryLegacy (admin pin wins).
+//   - otherwise → category = PrimaryCategory, subcategory =
+//     PrimarySubcategory, legacy = PrimaryCategoryLegacy.
+//   - if subcategory is empty AND category matches a legacy flat slug from
+//     LegacyCategoryMap, collapse via LookupLegacyCategory so the v3 (cat,
+//     sub) tuple is emitted and primary_category falls into legacy. This
+//     keeps the metric-export path correct for repos still carrying flat
+//     values from pre-v3 classifier output.
+//
+// The triple is always emitted unconditionally on the metric — even when
+// any leg is empty — so the dashboard sees a stable attribute shape across
+// rows. Gating on non-empty would silently drop the dimension on rows
+// that haven't been re-classified yet (the regression observed in ISI-786).
+func (r *RepoRecord) ResolveTaxonomy() (category, subcategory, legacy string) {
+	if r.ForceCategory != "" {
+		category = r.ForceCategory
+		subcategory = r.ForceSubcategory
+		legacy = r.PrimaryCategoryLegacy
+	} else {
+		category = r.PrimaryCategory
+		subcategory = r.PrimarySubcategory
+		legacy = r.PrimaryCategoryLegacy
+	}
+	if subcategory == "" {
+		if pair, ok := LegacyCategoryMap[category]; ok {
+			if legacy == "" {
+				legacy = category
+			}
+			category, subcategory = pair.Category, pair.Subcategory
+		}
+	}
+	return category, subcategory, legacy
+}
+
 // IsAllowedPair returns true if (category, subcategory) is in TaxonomyV2 and
 // subcategory is not the special refusal sink when category != "other".
 // Graceful-refusal validation is handled separately by the classifier (§1.2 C).

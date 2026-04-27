@@ -52,6 +52,16 @@ type RepoRecord struct {
 	ModelUsed          string
 	ForceCategory      string
 	Excluded           int
+
+	// v3 taxonomy fields (ISI-714 / ISI-786). PrimarySubcategory holds the
+	// 2nd-level token (e.g. "agents") under the closed (cat, sub) matrix in
+	// taxonomy_map.go. PrimaryCategoryLegacy is the pre-migration flat slug
+	// (e.g. "ai-agents") preserved for the 30-day backward-compat window.
+	// ForceSubcategory pairs with ForceCategory when an admin pins both
+	// halves of a (category, subcategory) pair.
+	PrimarySubcategory    string
+	PrimaryCategoryLegacy string
+	ForceSubcategory      string
 }
 
 // GetRepo returns a repository by full_name. Returns nil if not found.
@@ -72,7 +82,8 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 			created_at, first_seen_at, last_collected_at,
 			status, etag, last_modified,
 			primary_category, category_confidence, readme_hash,
-			classified_at, model_used, force_category, excluded
+			classified_at, model_used, force_category, excluded,
+			primary_subcategory, primary_category_legacy, force_subcategory
 		FROM repos WHERE full_name = ?`, fullName).Scan(
 		&r.ID, &r.FullName, &r.Owner, &r.Name, &r.Language,
 		&r.Stars, &r.StarsPrev, &r.Forks, &r.OpenIssues, &r.OpenPRs,
@@ -86,6 +97,7 @@ func (d *DB) GetRepo(fullName string) (*RepoRecord, error) {
 		&r.Status, &r.ETag, &r.LastModified,
 		&r.PrimaryCategory, &r.CategoryConfidence, &r.ReadmeHash,
 		&r.ClassifiedAt, &r.ModelUsed, &r.ForceCategory, &r.Excluded,
+		&r.PrimarySubcategory, &r.PrimaryCategoryLegacy, &r.ForceSubcategory,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -114,7 +126,8 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			created_at, first_seen_at, last_collected_at,
 			status, etag, last_modified,
 			primary_category, category_confidence, readme_hash,
-			classified_at, model_used, force_category, excluded
+			classified_at, model_used, force_category, excluded,
+			primary_subcategory, primary_category_legacy, force_subcategory
 		) VALUES (
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?,
@@ -127,7 +140,8 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			?, ?, ?,
 			?, ?, ?,
 			?, ?, ?,
-			?, ?, ?, ?
+			?, ?, ?, ?,
+			?, ?, ?
 		) ON CONFLICT(full_name) DO UPDATE SET
 			owner = excluded.owner,
 			name = excluded.name,
@@ -161,7 +175,10 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 			classified_at = excluded.classified_at,
 			model_used = excluded.model_used,
 			force_category = excluded.force_category,
-			excluded = excluded.excluded`,
+			excluded = excluded.excluded,
+			primary_subcategory = excluded.primary_subcategory,
+			primary_category_legacy = excluded.primary_category_legacy,
+			force_subcategory = excluded.force_subcategory`,
 		r.FullName, r.Owner, r.Name, r.Language,
 		r.Stars, r.StarsPrev, r.Forks, r.OpenIssues, r.OpenPRs,
 		r.Contributors, r.ContributorsPrev,
@@ -174,6 +191,7 @@ func (d *DB) UpsertRepo(r *RepoRecord) error {
 		r.Status, r.ETag, r.LastModified,
 		r.PrimaryCategory, r.CategoryConfidence, r.ReadmeHash,
 		r.ClassifiedAt, r.ModelUsed, r.ForceCategory, r.Excluded,
+		r.PrimarySubcategory, r.PrimaryCategoryLegacy, r.ForceSubcategory,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting repo %s: %w", r.FullName, err)
@@ -274,7 +292,8 @@ const repoSelectColumns = `id, full_name, owner, name, language,
 		created_at, first_seen_at, last_collected_at,
 		status, etag, last_modified,
 		primary_category, category_confidence, readme_hash,
-		classified_at, model_used, force_category, excluded`
+		classified_at, model_used, force_category, excluded,
+		primary_subcategory, primary_category_legacy, force_subcategory`
 
 // AllRepos returns all non-excluded repository records.
 func (d *DB) AllRepos() ([]RepoRecord, error) {
@@ -425,6 +444,7 @@ func (d *DB) queryRepos(query string, args ...interface{}) ([]RepoRecord, error)
 			&r.Status, &r.ETag, &r.LastModified,
 			&r.PrimaryCategory, &r.CategoryConfidence, &r.ReadmeHash,
 			&r.ClassifiedAt, &r.ModelUsed, &r.ForceCategory, &r.Excluded,
+			&r.PrimarySubcategory, &r.PrimaryCategoryLegacy, &r.ForceSubcategory,
 		); err != nil {
 			return nil, fmt.Errorf("scanning repo row: %w", err)
 		}
