@@ -34,6 +34,8 @@ nav:
   - Daemon Guide: daemon-guide.md
   - OpenTelemetry Integration: otel-integration.md
   - Architecture: architecture.md
+  - Operations:
+      - gharchive Fallback: operations/gharchive.md
   - Contributing: contributing.md
 
 markdown_extensions:
