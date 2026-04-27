@@ -1,0 +1,14 @@
+[Unit]
+Description=Monthly trigger for github-radar <cat>/other drift audit
+Documentation=https://example.invalid/ISI-720
+
+[Timer]
+# Plan §4: monthly on the 1st at 03:00 local.
+OnCalendar=*-*-01 03:00:00
+# Catch up if the machine was off at the firing time.
+Persistent=true
+RandomizedDelaySec=600
+Unit=github-radar-other-audit.service
+
+[Install]
+WantedBy=timers.target

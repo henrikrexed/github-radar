@@ -1,0 +1,13 @@
+{
+  "name": "empty_topics_fallback",
+  "description": "Mix of repos with topics and repos with empty topics. Empty-topics repos must be skipped from clustering (plan §3 fallback) but the orchestrator still counts them in aggregate share — this fixture tests only the clustering side. Six total repos, four have alpha, two have empty topics: clustering returns one 4-repo cluster (below MinClusterSize, so emits zero clusters from the inverted-index step).",
+  "input": [
+    {"full_name": "alice/aaa", "primary_category": "ai", "topics": ["alpha"], "confidence": 0.80},
+    {"full_name": "bob/bbb",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.80},
+    {"full_name": "carol/ccc", "primary_category": "ai", "topics": ["alpha"], "confidence": 0.80},
+    {"full_name": "dan/ddd",   "primary_category": "ai", "topics": ["alpha"], "confidence": 0.80},
+    {"full_name": "eve/eee",   "primary_category": "ai", "topics": [],        "confidence": 0.80},
+    {"full_name": "frank/fff", "primary_category": "ai", "topics": [],        "confidence": 0.80}
+  ],
+  "expected_clusters": []
+}

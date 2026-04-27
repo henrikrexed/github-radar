@@ -137,6 +137,9 @@ func (c *CLI) runCommand(cmd string, args []string) int {
 	case "admin":
 		adminCmd := NewAdminCmd(c)
 		return adminCmd.Run(args)
+	case "audit":
+		auditCmd := NewAuditCmd(c)
+		return auditCmd.Run(args)
 	case "help":
 		c.printHelp()
 		return 0

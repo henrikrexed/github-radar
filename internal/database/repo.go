@@ -902,3 +902,62 @@ func (d *DB) AllRepoStatesMap() (map[string]RepoRecord, error) {
 // taxonomy v3 migration). The classifier live-fetches them from the GitHub
 // API via Pipeline.ClassifySingle; consumers that previously read
 // repo.Topics / repo.Description should follow the same pattern.
+
+// AuditOtherCandidate is the minimal projection used by the monthly
+// `<cat>/other` drift audit (ISI-751). Topics are not in this struct
+// because they are live-fetched from GitHub at audit time per ISI-743.
+type AuditOtherCandidate struct {
+	FullName        string
+	PrimaryCategory string
+	Confidence      float64
+}
+
+// AuditOtherDriftCandidates returns rows where the v3-taxonomy
+// classifier has parked the repo in `<cat>/other`, scoped per the
+// audit denominator rules (plan §2 + §7): non-curated, currently
+// active. Returned in deterministic order by full_name.
+//
+// Excludes are NOT explicitly filtered — the schema's `excluded` flag
+// applies elsewhere (e.g. taxonomy-rule classification overrides) and
+// curated/inactive repos are excluded from BOTH numerator and
+// denominator via the existing `is_curated_list` and `status` columns.
+func (d *DB) AuditOtherDriftCandidates() ([]AuditOtherCandidate, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT full_name, primary_category, category_confidence
+		FROM repos
+		WHERE primary_subcategory = 'other'
+		  AND is_curated_list = 0
+		  AND status = 'active'
+		ORDER BY full_name`)
+	if err != nil {
+		return nil, fmt.Errorf("querying audit other-drift candidates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AuditOtherCandidate
+	for rows.Next() {
+		var c AuditOtherCandidate
+		if err := rows.Scan(&c.FullName, &c.PrimaryCategory, &c.Confidence); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// AuditActiveNonCuratedCount returns the audit denominator (plan §7):
+// `is_curated_list = 0 AND status = 'active'`. Curated lists and
+// inactive/archived repos are excluded.
+func (d *DB) AuditActiveNonCuratedCount() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var n int
+	err := d.db.QueryRow(`SELECT COUNT(*) FROM repos WHERE is_curated_list = 0 AND status = 'active'`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("querying active+non-curated count: %w", err)
+	}
+	return n, nil
+}
