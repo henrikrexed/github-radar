@@ -32,6 +32,23 @@ type RateLimit struct {
 	Reset     time.Time // When the rate limit resets
 }
 
+// APIObserver receives per-call telemetry events so the metrics layer
+// can publish OTel counters/gauges without the github package taking a
+// dependency on internal/metrics.
+//
+// Both methods must be safe for concurrent use and non-blocking.
+type APIObserver interface {
+	// ObserveCall is invoked once per completed HTTP round-trip.
+	// resource is a coarse label (e.g. "repo", "graphql", "pulls",
+	// "activity", "readme", "search"); result is one of "ok",
+	// "not_modified", "error", "rate_limited".
+	ObserveCall(resource, result string)
+
+	// ObserveRateLimit is invoked whenever new `X-RateLimit-*` headers
+	// have been parsed. It receives the latest snapshot.
+	ObserveRateLimit(limit, remaining int, resetAt time.Time)
+}
+
 // Client is a GitHub API client with rate limit tracking.
 type Client struct {
 	httpClient    *http.Client
@@ -40,6 +57,7 @@ type Client struct {
 	rateLimit     RateLimit
 	rateLimitOpts RateLimitOptions
 	retryConfig   RetryConfig
+	observer      APIObserver
 	mu            sync.RWMutex
 }
 
@@ -124,6 +142,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 
 	// Update rate limits from response
 	c.updateRateLimitFromHeaders(resp.Header)
+	c.notifyRateLimit()
 
 	return resp, nil
 }
@@ -235,6 +254,36 @@ func (c *Client) SetBaseURL(url string) {
 // SetHTTPClient sets a custom HTTP client (useful for testing).
 func (c *Client) SetHTTPClient(client *http.Client) {
 	c.httpClient = client
+}
+
+// SetAPIObserver installs a telemetry observer. Pass nil to remove.
+func (c *Client) SetAPIObserver(obs APIObserver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.observer = obs
+}
+
+// notifyCall fires the observer's ObserveCall hook if installed.
+// Splits the RLock from the call to avoid holding the lock during
+// user callbacks.
+func (c *Client) notifyCall(resource, result string) {
+	c.mu.RLock()
+	obs := c.observer
+	c.mu.RUnlock()
+	if obs != nil {
+		obs.ObserveCall(resource, result)
+	}
+}
+
+// notifyRateLimit fires the ObserveRateLimit hook with the current snapshot.
+func (c *Client) notifyRateLimit() {
+	c.mu.RLock()
+	obs := c.observer
+	rl := c.rateLimit
+	c.mu.RUnlock()
+	if obs != nil {
+		obs.ObserveRateLimit(rl.Limit, rl.Remaining, rl.Reset)
+	}
 }
 
 // decodeJSON decodes a JSON response body into the target value.

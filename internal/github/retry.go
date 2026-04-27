@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -78,6 +79,11 @@ func (c *Client) DoWithRetry(req *http.Request) (*http.Response, error) {
 	}
 
 	var lastErr error
+	// nextDelayOverride, when non-zero, replaces the next computed
+	// exponential-backoff delay. Set when a server responds with a
+	// Retry-After header (RFC 7231 §7.1.3) so we honour the contract
+	// instead of stomping on it with our local schedule.
+	var nextDelayOverride time.Duration
 	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			// Reset request body for retry if needed
@@ -89,8 +95,13 @@ func (c *Client) DoWithRetry(req *http.Request) (*http.Response, error) {
 				req.Body = body
 			}
 
-			// Wait with exponential backoff
+			// Wait with exponential backoff, taking max(backoff, Retry-After)
+			// when the server supplied one.
 			delay := calculateBackoff(attempt, config.BaseDelay, config.MaxDelay)
+			if nextDelayOverride > delay {
+				delay = nextDelayOverride
+			}
+			nextDelayOverride = 0
 
 			if config.OnRetry != nil {
 				config.OnRetry(attempt, lastErr, delay)
@@ -113,7 +124,16 @@ func (c *Client) DoWithRetry(req *http.Request) (*http.Response, error) {
 		}
 
 		// Check if response indicates a retryable error
-		if isRetryableStatusCode(resp.StatusCode) {
+		if isRetryableStatusCode(resp.StatusCode) || isRateLimitedExhaustion(resp) {
+			// GitHub's secondary rate limit returns 429 + Retry-After.
+			// The primary rate limit returns 403 + X-RateLimit-Remaining: 0,
+			// often with Retry-After as well. Honour the header in both cases.
+			if d, ok := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
+				if d > config.MaxDelay {
+					d = config.MaxDelay
+				}
+				nextDelayOverride = d
+			}
 			resp.Body.Close()
 			lastErr = &HTTPError{StatusCode: resp.StatusCode}
 			continue
@@ -123,6 +143,45 @@ func (c *Client) DoWithRetry(req *http.Request) (*http.Response, error) {
 	}
 
 	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+// isRateLimitedExhaustion reports whether the response is a primary
+// GitHub rate-limit exhaustion (403 with X-RateLimit-Remaining: 0).
+// These are retryable when paired with a Retry-After (or after the
+// reset window), unlike a generic 403 which is permanent.
+func isRateLimitedExhaustion(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+	if remaining := resp.Header.Get("X-RateLimit-Remaining"); remaining == "0" {
+		return true
+	}
+	return false
+}
+
+// parseRetryAfter parses the Retry-After header value per RFC 7231 §7.1.3.
+// It accepts either delta-seconds (a non-negative integer) or an HTTP-date.
+// The second form is computed relative to `now` so callers can inject a
+// clock for tests. Returns (0, false) if the value is empty or unparseable.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	if value == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(value); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	// HTTP-date forms accepted per RFC 7231: IMF-fixdate, RFC850, asctime.
+	if t, err := http.ParseTime(value); err == nil {
+		d := t.Sub(now)
+		if d < 0 {
+			return 0, true
+		}
+		return d, true
+	}
+	return 0, false
 }
 
 // GetWithRetry performs a GET request with automatic retry.

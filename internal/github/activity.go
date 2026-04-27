@@ -249,6 +249,11 @@ func (e *ActivityError) HasErrors() bool {
 
 // GetActivityMetrics collects all activity metrics for a repository.
 // Returns partial results with an ActivityError if some metrics fail to collect.
+//
+// One observer ObserveCall is fired with resource="activity" per invocation,
+// matching the T5 / ISI-716 budget model that treats activity collection as
+// one logical unit per repo per refresh tick. The internal HTTP calls
+// (pulls + issues + contributors + releases) are not individually tagged.
 func (c *Client) GetActivityMetrics(ctx context.Context, owner, repo string) (*ActivityMetrics, error) {
 	metrics := &ActivityMetrics{}
 	var actErr ActivityError
@@ -286,7 +291,9 @@ func (c *Client) GetActivityMetrics(ctx context.Context, owner, repo string) (*A
 	metrics.LatestRelease = release
 
 	if actErr.HasErrors() {
+		c.notifyCall("activity", "error")
 		return metrics, &actErr
 	}
+	c.notifyCall("activity", "ok")
 	return metrics, nil
 }

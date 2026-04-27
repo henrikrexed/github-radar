@@ -308,3 +308,69 @@ func TestExporter_Meter(t *testing.T) {
 		t.Error("Meter() returned nil")
 	}
 }
+
+// T5 / ISI-716 — API budget instruments.
+
+func TestExporter_APIBudgetInstrumentsCreated(t *testing.T) {
+	exp, err := NewExporter(ExporterConfig{ServiceName: "t", DryRun: true})
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	instruments := map[string]interface{}{
+		"apiRateLimitGauge":     exp.apiRateLimitGauge,
+		"apiRateRemainingGauge": exp.apiRateRemainingGauge,
+		"apiRateUsedRatioGauge": exp.apiRateUsedRatioGauge,
+		"apiRateResetSecsGauge": exp.apiRateResetSecsGauge,
+		"apiCallsCounter":       exp.apiCallsCounter,
+		"refreshTierReposGauge": exp.refreshTierReposGauge,
+	}
+	for name, inst := range instruments {
+		if inst == nil {
+			t.Errorf("%s not created", name)
+		}
+	}
+}
+
+func TestExporter_RecordRateLimit_HappyPath(t *testing.T) {
+	exp, err := NewExporter(ExporterConfig{ServiceName: "t", DryRun: true})
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	// Should not panic; we exercise the branches.
+	exp.RecordRateLimit(context.Background(), RateLimitSnapshot{
+		Limit:     5000,
+		Remaining: 4500,
+		ResetAt:   time.Now().Add(30 * time.Minute),
+	})
+	// Zero-limit branch (no used_ratio emitted).
+	exp.RecordRateLimit(context.Background(), RateLimitSnapshot{})
+}
+
+func TestExporter_RecordAPICall_Counter(t *testing.T) {
+	exp, err := NewExporter(ExporterConfig{ServiceName: "t", DryRun: true})
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	ctx := context.Background()
+	exp.RecordAPICall(ctx, "graphql", "ok")
+	exp.RecordAPICall(ctx, "repo", "not_modified")
+	exp.RecordAPICall(ctx, "repo", "rate_limited")
+}
+
+func TestExporter_RecordRefreshTierHistogram(t *testing.T) {
+	exp, err := NewExporter(ExporterConfig{ServiceName: "t", DryRun: true})
+	if err != nil {
+		t.Fatalf("NewExporter: %v", err)
+	}
+	defer exp.ShutdownWithTimeout()
+
+	exp.RecordRefreshTierHistogram(context.Background(), map[string]int{
+		"hot": 500, "warm": 1500, "cold": 1000, "new": 12,
+	})
+}
