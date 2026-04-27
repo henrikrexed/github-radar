@@ -997,8 +997,8 @@ func TestReposNeedingClassification(t *testing.T) {
 // TestReposNeedingClassification_BackfillZombiePickup is the ISI-787 regression
 // guard. The v3 taxonomy backfill (schema_migration.go) stamps never-classified
 // rows with primary_category='other' + classification_refusal_reason=
-// 'backfill_legacy_other' but leaves status='pending' and classified_at=''.
-// Without the (status='pending' AND classified_at='') clause in
+// 'backfill_legacy_other' but leaves status='pending' and classified_at=”.
+// Without the (status='pending' AND classified_at=”) clause in
 // ReposNeedingClassification, those rows are permanent zombies — they don't
 // match the empty-category branch (category is now 'other') and they don't
 // match the status-IN branch ('pending' is not in the set). High-star repos
