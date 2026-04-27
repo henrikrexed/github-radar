@@ -2,10 +2,8 @@ version: '3.8'
 
 services:
   github-radar:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: github-radar:latest
+    image: ghcr.io/henrikrexed/github-radar:main
+    pull_policy: always
     container_name: github-radar
     restart: unless-stopped
     depends_on:
