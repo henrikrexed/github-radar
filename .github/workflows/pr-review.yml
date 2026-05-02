@@ -19,9 +19,19 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.pulls.requestReviewers({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              reviewers: ['copilot']
-            });
+            // Requires GitHub Copilot code review to be enabled in repository settings:
+            // Settings → Code review → Copilot code review
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                reviewers: ['copilot']
+              });
+              core.info('Copilot review requested successfully.');
+            } catch (err) {
+              core.warning(
+                `Could not request Copilot review: ${err.message}. ` +
+                'Ensure Copilot code review is enabled under Settings → Code review.'
+              );
+            }
