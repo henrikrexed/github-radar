@@ -89,8 +89,8 @@ func TestExtractActivityFromNode_TruncatedPage(t *testing.T) {
 
 	prs := make([]graphqlMergedPR, graphqlActivityNodePage)
 	for i := range prs {
-		t := inWindow
-		prs[i] = graphqlMergedPR{MergedAt: &t}
+		mergedAt := inWindow
+		prs[i] = graphqlMergedPR{MergedAt: &mergedAt, UpdatedAt: &inWindow}
 	}
 	node := &graphqlRepoNode{
 		RecentMergedPRs: graphqlMergedPRsPage{
@@ -122,11 +122,11 @@ func TestExtractActivityFromNode_NotTruncatedWhenTailBeyondWindow(t *testing.T) 
 	prs := make([]graphqlMergedPR, graphqlActivityNodePage)
 	// First half in window, last node out of window.
 	for i := 0; i < graphqlActivityNodePage-1; i++ {
-		t := inWindow
-		prs[i] = graphqlMergedPR{MergedAt: &t}
+		mergedAt := inWindow
+		prs[i] = graphqlMergedPR{MergedAt: &mergedAt, UpdatedAt: &inWindow}
 	}
-	tt := outOfWindow
-	prs[graphqlActivityNodePage-1] = graphqlMergedPR{MergedAt: &tt}
+	mergedAt := outOfWindow
+	prs[graphqlActivityNodePage-1] = graphqlMergedPR{MergedAt: &mergedAt, UpdatedAt: &outOfWindow}
 
 	node := &graphqlRepoNode{
 		RecentMergedPRs: graphqlMergedPRsPage{
@@ -137,6 +137,32 @@ func TestExtractActivityFromNode_NotTruncatedWhenTailBeyondWindow(t *testing.T) 
 	_, truncated := extractActivityFromNode(node, fixedNow)
 	if truncated {
 		t.Errorf("truncated = true, want false (oldest node in page is outside 7d window)")
+	}
+}
+
+// TestExtractActivityFromNode_StaleMergesWithRecentUpdatedAt covers the
+// pathological case: 100 long-merged PRs that were all recently commented
+// on, so updatedAt is inside the 7-day window but mergedAt is months old.
+// The truncation guard MUST still signal truncation based on UpdatedAt
+// because the UPDATED_AT desc ordering means more in-window merges may
+// exist beyond the page boundary.
+func TestExtractActivityFromNode_StaleMergesWithRecentUpdatedAt(t *testing.T) {
+	recentUpdate := fixedNow.Add(-1 * 24 * time.Hour)
+	staleMerge := fixedNow.Add(-90 * 24 * time.Hour)
+
+	prs := make([]graphqlMergedPR, graphqlActivityNodePage)
+	for i := range prs {
+		prs[i] = graphqlMergedPR{MergedAt: &staleMerge, UpdatedAt: &recentUpdate}
+	}
+	node := &graphqlRepoNode{
+		RecentMergedPRs: graphqlMergedPRsPage{
+			Nodes:    prs,
+			PageInfo: graphqlPageInfo{HasNextPage: true},
+		},
+	}
+	_, truncated := extractActivityFromNode(node, fixedNow)
+	if !truncated {
+		t.Errorf("truncated = false, want true (100 stale merges with recent UpdatedAt must signal truncation)")
 	}
 }
 
@@ -167,7 +193,7 @@ func TestBulkFetchMetadata_PopulatesActivity(t *testing.T) {
 					"repositoryTopics": {"nodes": []},
 					"description": "hello",
 					"recentMergedPRs": {
-						"nodes": [{"mergedAt": %q}, {"mergedAt": %q}],
+						"nodes": [{"mergedAt": %q, "updatedAt": %q}, {"mergedAt": %q, "updatedAt": %q}],
 						"pageInfo": {"hasNextPage": false}
 					},
 					"recentIssues": {
@@ -180,7 +206,7 @@ func TestBulkFetchMetadata_PopulatesActivity(t *testing.T) {
 					}
 				}
 			}
-		}`, mergedAt, mergedAt, createdAt, publishedAt)
+		}`, mergedAt, mergedAt, mergedAt, mergedAt, createdAt, publishedAt)
 	}))
 	defer server.Close()
 
@@ -276,7 +302,7 @@ func happyGraphQLForRepo(owner, name string, truncated bool) string {
 	mergedAt := time.Now().Add(-2 * 24 * time.Hour).Format(time.RFC3339)
 	createdAt := time.Now().Add(-1 * 24 * time.Hour).Format(time.RFC3339)
 
-	prNodes := fmt.Sprintf(`[{"mergedAt": %q}]`, mergedAt)
+	prNodes := fmt.Sprintf(`[{"mergedAt": %q, "updatedAt": %q}]`, mergedAt, mergedAt)
 	hasNext := false
 	if truncated {
 		// Build a 100-element node array, all in-window, with hasNextPage=true.
@@ -286,7 +312,7 @@ func happyGraphQLForRepo(owner, name string, truncated bool) string {
 			if i > 0 {
 				b.WriteString(",")
 			}
-			fmt.Fprintf(&b, `{"mergedAt": %q}`, mergedAt)
+			fmt.Fprintf(&b, `{"mergedAt": %q, "updatedAt": %q}`, mergedAt, mergedAt)
 		}
 		b.WriteString("]")
 		prNodes = b.String()

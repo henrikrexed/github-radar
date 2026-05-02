@@ -129,7 +129,7 @@ const graphqlRepoFragment = `fragment RepoFields on Repository {
   repositoryTopics(first: 20) { nodes { topic { name } } }
   description
   recentMergedPRs: pullRequests(states: MERGED, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
-    nodes { mergedAt }
+    nodes { mergedAt updatedAt }
     pageInfo { hasNextPage }
   }
   recentIssues: issues(states: [OPEN, CLOSED], first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
@@ -326,7 +326,8 @@ type graphqlMergedPRsPage struct {
 }
 
 type graphqlMergedPR struct {
-	MergedAt *time.Time `json:"mergedAt"`
+	MergedAt  *time.Time `json:"mergedAt"`
+	UpdatedAt *time.Time `json:"updatedAt"`
 }
 
 type graphqlIssuesPage struct {
@@ -371,14 +372,18 @@ func extractActivityFromNode(node *graphqlRepoNode, now time.Time) (*ActivityMet
 			mergedCount++
 		}
 	}
-	// Truncated if the page is full AND the oldest returned merge is
-	// still inside the 7-day window — meaning there may be more in the
-	// window that we did not see. We use len(nodes) >= page-size as the
-	// "full page" signal and trust the API's ordering (UPDATED_AT desc)
-	// to put the oldest at the tail.
+	// Truncated if the page is full AND the tail entry's UpdatedAt is
+	// still inside the 7-day window — meaning more in-window merges may
+	// exist beyond the page boundary.  Because recentMergedPRs is ordered
+	// UPDATED_AT desc, the tail has the smallest UpdatedAt on the page.
+	// We compare UpdatedAt (not MergedAt) against the 7-day window because
+	// UpdatedAt >= MergedAt always holds for merged PRs: any post-merge
+	// comment bumps updatedAt arbitrarily past mergedAt, so a page of
+	// stale-but-recently-commented merges can have mergedAt months old
+	// while the page boundary still contains more in-window merges.
 	mergedTruncated := false
 	if len(node.RecentMergedPRs.Nodes) >= graphqlActivityNodePage && node.RecentMergedPRs.PageInfo.HasNextPage {
-		if last := node.RecentMergedPRs.Nodes[len(node.RecentMergedPRs.Nodes)-1]; last.MergedAt != nil && last.MergedAt.After(sevenDaysAgo) {
+		if last := node.RecentMergedPRs.Nodes[len(node.RecentMergedPRs.Nodes)-1]; last.UpdatedAt != nil && last.UpdatedAt.After(sevenDaysAgo) {
 			mergedTruncated = true
 		}
 	}
