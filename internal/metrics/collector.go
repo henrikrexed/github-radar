@@ -31,6 +31,14 @@ type CollectedMetrics struct {
 	IssueVelocity     float64
 	ContributorGrowth float64
 	GrowthScore       float64
+
+	// Partial marks this result as containing only delta/derived metrics
+	// (e.g. from gharchive.org fallback).  When true, UpdateStoreFromCollected
+	// preserves the previous absolute counts (Stars, Forks, Contributors,
+	// GrowthScore) and only updates velocity/cadence fields.  This prevents
+	// a fallback collector from overwriting correct absolute values with
+	// near-zero delta counts.
+	Partial bool
 }
 
 type MetricsCollector interface {
