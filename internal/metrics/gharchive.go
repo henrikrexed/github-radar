@@ -92,7 +92,6 @@ func NewHourlyArchiveCollector(baseURL string, timeout time.Duration, exporter *
 	}
 }
 
-
 func (h *HourlyArchiveCollector) Collect(ctx context.Context, repos []RepoRef, window time.Duration) ([]CollectedMetrics, error) {
 	if len(repos) == 0 {
 		return nil, nil
