@@ -87,6 +87,13 @@ type Exporter struct {
 	// Classification health instruments (ISI-775).
 	reposPendingGauge      metric.Int64Gauge
 	classificationRunCount metric.Int64Counter
+
+	// Collector router instruments (ISI-815).
+	collectorActiveGauge     metric.Int64Gauge
+	fallbackTripCount        metric.Int64Counter
+	gharchiveBytesDownloaded metric.Int64Counter
+	gharchiveDecodeDuration  metric.Float64Histogram
+	gharchiveEventsFiltered  metric.Int64Counter
 }
 
 // NewExporter creates a new metrics exporter.
@@ -402,6 +409,47 @@ func (e *Exporter) createInstruments() error {
 		return err
 	}
 
+	// Collector router instruments (ISI-815).
+	e.collectorActiveGauge, err = e.meter.Int64Gauge("collector_active",
+		metric.WithDescription("Active collector backend (1=active, 0=inactive), tagged by backend"),
+		metric.WithUnit("{backend}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.fallbackTripCount, err = e.meter.Int64Counter("fallback_trip_count_total",
+		metric.WithDescription("Number of times the router switched to gharchive fallback"),
+		metric.WithUnit("{trips}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.gharchiveBytesDownloaded, err = e.meter.Int64Counter("gharchive_archive_bytes_downloaded_total",
+		metric.WithDescription("Total bytes downloaded from gharchive.org"),
+		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.gharchiveDecodeDuration, err = e.meter.Float64Histogram("gharchive_decode_duration_ms",
+		metric.WithDescription("Duration of gharchive archive decode in milliseconds"),
+		metric.WithUnit("ms"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.gharchiveEventsFiltered, err = e.meter.Int64Counter("gharchive_events_filtered_total",
+		metric.WithDescription("Events filtered from gharchive, tagged by kept=true|false"),
+		metric.WithUnit("{events}"),
+	)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -654,4 +702,47 @@ func (e *Exporter) IsDryRun() bool {
 // Meter returns the underlying OTel meter for custom instrumentation.
 func (e *Exporter) Meter() metric.Meter {
 	return e.meter
+}
+
+func (e *Exporter) RecordCollectorActive(ctx context.Context, backend string) {
+	if e == nil || e.collectorActiveGauge == nil {
+		return
+	}
+	e.collectorActiveGauge.Record(ctx, 1, metric.WithAttributes(
+		attribute.String("backend", backend),
+	))
+}
+
+func (e *Exporter) RecordFallbackTrip(ctx context.Context) {
+	if e == nil || e.fallbackTripCount == nil {
+		return
+	}
+	e.fallbackTripCount.Add(ctx, 1)
+}
+
+func (e *Exporter) RecordGHArchiveBytesDownloaded(ctx context.Context, bytes int64) {
+	if e == nil || e.gharchiveBytesDownloaded == nil {
+		return
+	}
+	e.gharchiveBytesDownloaded.Add(ctx, bytes)
+}
+
+func (e *Exporter) RecordGHArchiveDecodeDuration(ctx context.Context, d time.Duration) {
+	if e == nil || e.gharchiveDecodeDuration == nil {
+		return
+	}
+	e.gharchiveDecodeDuration.Record(ctx, float64(d.Milliseconds()))
+}
+
+func (e *Exporter) RecordGHArchiveEventsFiltered(ctx context.Context, kept bool, count int64) {
+	if e == nil || e.gharchiveEventsFiltered == nil {
+		return
+	}
+	keptStr := "false"
+	if kept {
+		keptStr = "true"
+	}
+	e.gharchiveEventsFiltered.Add(ctx, count, metric.WithAttributes(
+		attribute.String("kept", keptStr),
+	))
 }

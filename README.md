@@ -15,6 +15,7 @@ GitHub Radar scans GitHub for repositories showing unusual growth patterns (star
 - **OpenTelemetry Export** — OTLP HTTP metrics to any compatible backend (Dynatrace, Grafana, Prometheus)
 - **Background Daemon** — Scheduled scanning with health/status HTTP endpoints
 - **LLM Classification** — Automatic CNCF category classification via Ollama with 19 categories, confidence thresholds, and README-based reclassification
+- **gharchive.org Fallback** — Automatic circuit breaker switches to hourly archive downloads when GitHub API budget runs low, enabling scans at scale (500+ repos) without hitting rate limits
 - **CLI Management** — Add, remove, list, discover, classify, and exclude repositories
 - **Cross-Platform** — Native binaries for Linux, macOS, and Windows
 
@@ -336,6 +337,16 @@ classification:
     - container-runtime
     - other                                  # Catch-all for uncategorized repos
 
+# Collector configuration — gharchive.org rate-limit fallback
+# When enabled, the router switches from live GitHub API to gharchive.org
+# hourly archive downloads when API budget headroom drops below the threshold.
+collector:
+  gharchive:
+    enabled: false                              # default: false — zero behavior change when disabled
+    base_url: https://data.gharchive.org        # gharchive.org hourly archive base URL
+    http_timeout: 60s                           # per-hour-file download timeout
+  fallback_threshold_pct: 0.25                  # trip fallback when remaining/limit < 0.25
+
 # Repositories to exclude from scanning
 exclusions:
   - example-org/spam-repo          # Exact match
@@ -450,6 +461,16 @@ GitHub Radar exports metrics via OTLP HTTP. Metrics use the `github.repo.*` name
 | `github.repo.growth_score` | Gauge | Composite growth score |
 | `github.repo.normalized_growth_score` | Gauge | Normalized score (0-100) |
 
+### Collector Metrics (when gharchive fallback is enabled)
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `collector_active` | Gauge | Active collector backend. Attribute: `backend` = `live` or `gharchive` |
+| `fallback_trip_count_total` | Counter | Number of times the router switched to gharchive fallback |
+| `gharchive_archive_bytes_downloaded_total` | Counter | Total bytes downloaded from gharchive.org |
+| `gharchive_decode_duration_ms` | Histogram | Duration of gharchive archive decode (ms) |
+| `gharchive_events_filtered_total` | Counter | Events filtered from archives. Attribute: `kept` = `true` or `false` |
+
 ### Dynatrace Setup
 
 ```yaml
@@ -490,7 +511,7 @@ github-radar/
 │   ├── discovery/        # Topic-based repository discovery
 │   ├── github/           # GitHub API client & scanner
 │   ├── logging/          # Structured logging
-│   ├── metrics/          # OTel metrics export
+│   ├── metrics/          # OTel metrics + collector backends (interface, live, gharchive, router)
 │   ├── repository/       # Repository management
 │   ├── scoring/          # Growth scoring algorithm
 │   └── state/            # JSON state persistence

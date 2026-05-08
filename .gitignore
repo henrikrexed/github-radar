@@ -27,5 +27,6 @@ config.yaml
 # State file
 *.state.json
 
-# BMAD output (keep tracked)
-# _bmad-output/
+# BMAD output
+_bmad-output/
+_bmad/

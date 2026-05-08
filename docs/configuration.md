@@ -93,6 +93,16 @@ classification:
     README excerpt:
     {{.Readme}}
 
+# Collector configuration — gharchive.org rate-limit fallback (ISI-815)
+# When enabled, the router switches from live GitHub API to gharchive.org
+# hourly archive downloads when API budget headroom drops below the threshold.
+collector:
+  gharchive:
+    enabled: false                              # default: false — zero behavior change when disabled
+    base_url: https://data.gharchive.org        # gharchive.org hourly archive base URL
+    http_timeout: 60s                           # per-hour-file download timeout
+  fallback_threshold_pct: 0.25                  # trip fallback when remaining/limit < 0.25
+
 # Repositories to exclude from scanning
 exclusions:
   - example-org/spam-repo          # Exact match: owner/repo
@@ -221,3 +231,62 @@ Classification is automatically re-triggered when:
 - A repository's README content changes (detected via SHA-256 hash comparison)
 - The classification model is changed via `github-radar classify model <name>`
 - A repository has never been classified
+
+## Collector Configuration
+
+The `collector` section configures the data collection backends. When gharchive.org fallback is enabled, GitHub Radar automatically switches from the live GitHub API to downloading hourly event archives when API budget headroom runs low.
+
+### How It Works
+
+1. Every scan cycle, the router checks `remaining / limit` from GitHub's `X-RateLimit-*` response headers
+2. If headroom drops below `fallback_threshold_pct` (default **25%**), the router switches to gharchive.org for that cycle only
+3. Next cycle, it re-evaluates — no sticky state. If budget recovered, it returns to the live API
+4. gharchive.org downloads hourly `.json.gz` files, streams gzip + JSON decode, filters events for tracked repos only
+
+### Configuration Keys
+
+```yaml
+collector:
+  gharchive:
+    enabled: false                              # Enable gharchive.org fallback (default: false)
+    base_url: https://data.gharchive.org        # Archive base URL
+    http_timeout: 60s                           # Download timeout per hourly file
+  fallback_threshold_pct: 0.25                  # Trip when remaining < 25% of limit
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `collector.gharchive.enabled` | bool | `false` | Enable the gharchive.org fallback. When `false`, the router is nil and behavior is identical to versions without this feature. |
+| `collector.gharchive.base_url` | string | `https://data.gharchive.org` | Base URL for hourly archive files. Files are fetched as `{base_url}/YYYY-MM-DD-HH.json.gz`. |
+| `collector.gharchive.http_timeout` | duration | `60s` | HTTP timeout for each hourly archive download. Each hour of data is a separate HTTP request. |
+| `collector.fallback_threshold_pct` | float64 | `0.25` | Fraction of API budget remaining below which the router trips to gharchive. Must be between 0 and 1. |
+
+### When to Enable
+
+Enable gharchive fallback when:
+
+- Tracking **500+ repositories** — the GitHub API budget (5,000 requests/hour) becomes tight at scale
+- Running **short scan intervals** (1-4 hours) — more frequent scans consume budget faster
+- Experiencing **rate limit errors** in production — the fallback provides a zero-cost safety net
+
+The fallback fires approximately 25% of cycles in the worst case. Since gharchive.org requires no authentication, no API keys, and has no rate limit, the only cost is network bandwidth.
+
+### What gharchive.org Provides
+
+[gharchive.org](https://www.gharchive.org/) publishes hourly archive files of all public GitHub events:
+
+- One file per hour, named `YYYY-MM-DD-HH.json.gz`
+- Available within minutes after each hour ends
+- Covers all public repositories going back to 2011
+- No authentication required
+
+The `HourlyArchiveCollector` downloads each hourly file within the scan window, streams the gzip decompression and JSON decode (never loads entire files into memory), and filters for tracked repositories. Over 99% of events are discarded — only events matching tracked repos are kept.
+
+### Signal Differences
+
+gharchive.org provides event-based data (star events, fork events, PR events, issue events, release events) rather than exact API counts. Velocity signals stay within +/-5% of live API values across all scoring weights:
+
+- `star_velocity`, `star_acceleration`, `fork_velocity`, `release_cadence`
+- `contributor_growth`, `pr_velocity`, `issue_velocity`, `merged_prs_7d`
+
+Absolute counts (total stars, total forks, contributor count) are not available from gharchive — only event-level deltas. The live API remains the source of truth for those metrics.

@@ -14,8 +14,20 @@ type Config struct {
 	Discovery      DiscoveryConfig      `yaml:"discovery"`
 	Scoring        ScoringConfig        `yaml:"scoring"`
 	Classification ClassificationConfig `yaml:"classification"`
+	Collector      CollectorConfig      `yaml:"collector"`
 	Exclusions     []string             `yaml:"exclusions"`
 	Repositories   []TrackedRepo        `yaml:"repositories"`
+}
+
+type CollectorConfig struct {
+	GHArchive            GHArchiveConfig `yaml:"gharchive"`
+	FallbackThresholdPct float64         `yaml:"fallback_threshold_pct"`
+}
+
+type GHArchiveConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	BaseURL     string `yaml:"base_url"`
+	HTTPTimeout string `yaml:"http_timeout"`
 }
 
 // TrackedRepo represents a repository being tracked with its categories.
@@ -303,5 +315,13 @@ README excerpt:
 		},
 		Exclusions:   []string{},
 		Repositories: []TrackedRepo{},
+		Collector: CollectorConfig{
+			GHArchive: GHArchiveConfig{
+				Enabled:     false,
+				BaseURL:     "https://data.gharchive.org",
+				HTTPTimeout: "60s",
+			},
+			FallbackThresholdPct: 0.25,
+		},
 	}
 }
