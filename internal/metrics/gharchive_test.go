@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -11,78 +12,19 @@ import (
 	"time"
 )
 
-func buildGZippedEvents(events []ghArchiveEvent) ([]byte, error) {
-	var buf []byte
-	for _, evt := range events {
-		data, err := json.Marshal(evt)
-		if err != nil {
-			return nil, err
-		}
-		buf = append(buf, data...)
-		buf = append(buf, '\n')
-	}
-	return buf, nil
-}
-
 func makeGZippedArchive(events []ghArchiveEvent) ([]byte, error) {
-	raw, err := buildGZippedEvents(events)
-	if err != nil {
-		return nil, err
-	}
-
-	var compressed []byte
-	pr, pw := ioPipe()
-	go func() {
-		gz := gzip.NewWriter(pw)
-		gz.Write(raw)
-		gz.Close()
-		pw.Close()
-	}()
-	buf := make([]byte, 4096)
-	for {
-		n, err := pr.Read(buf)
-		if n > 0 {
-			compressed = append(compressed, buf[:n]...)
-		}
-		if err != nil {
-			break
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	enc := json.NewEncoder(gz)
+	for _, evt := range events {
+		if err := enc.Encode(evt); err != nil {
+			return nil, fmt.Errorf("encoding event: %w", err)
 		}
 	}
-	return compressed, nil
-}
-
-type pipeReader struct {
-	ch chan []byte
-}
-
-type pipeWriter struct {
-	ch chan []byte
-}
-
-func ioPipe() (*pipeReader, *pipeWriter) {
-	ch := make(chan []byte, 1)
-	return &pipeReader{ch: ch}, &pipeWriter{ch: ch}
-}
-
-func (r *pipeReader) Read(p []byte) (int, error) {
-	data, ok := <-r.ch
-	if !ok {
-		return 0, fmt.Errorf("closed")
+	if err := gz.Close(); err != nil {
+		return nil, fmt.Errorf("closing gzip writer: %w", err)
 	}
-	n := copy(p, data)
-	return n, nil
-}
-
-func (w *pipeWriter) Write(p []byte) (int, error) {
-	cp := make([]byte, len(p))
-	copy(cp, p)
-	w.ch <- cp
-	return len(p), nil
-}
-
-func (w *pipeWriter) Close() error {
-	close(w.ch)
-	return nil
+	return buf.Bytes(), nil
 }
 
 func makeTestEvent(eventType, repoName, actorLogin string) ghArchiveEvent {

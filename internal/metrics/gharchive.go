@@ -26,16 +26,6 @@ type ghArchiveEvent struct {
 	CreatedAt string `json:"created_at"`
 }
 
-type starPayload struct {
-	Action string `json:"action"`
-}
-
-type forkPayload struct {
-	Forkee struct {
-		FullName string `json:"full_name"`
-	} `json:"forkee"`
-}
-
 type releasePayload struct {
 	Release struct {
 		PublishedAt string `json:"published_at"`
@@ -45,8 +35,8 @@ type releasePayload struct {
 }
 
 type pullRequestPayload struct {
-	Action string `json:"action"`
-	Number int    `json:"number"`
+	Action      string `json:"action"`
+	Number      int    `json:"number"`
 	PullRequest struct {
 		Merged   bool   `json:"merged"`
 		MergedAt string `json:"merged_at"`
@@ -57,10 +47,6 @@ type pullRequestPayload struct {
 type issuesPayload struct {
 	Action string `json:"action"`
 	Number int    `json:"number"`
-}
-
-type WatchEvent struct {
-	Action string `json:"action"`
 }
 
 type repoAccumulator struct {
@@ -106,23 +92,14 @@ func NewHourlyArchiveCollector(baseURL string, timeout time.Duration, exporter *
 	}
 }
 
-type GHArchiveConfig struct {
-	Enabled            bool
-	BaseURL            string
-	HTTPTimeout        time.Duration
-	FallbackThresholdPct float64
-}
-
 func (h *HourlyArchiveCollector) Collect(ctx context.Context, repos []RepoRef, window time.Duration) ([]CollectedMetrics, error) {
 	if len(repos) == 0 {
 		return nil, nil
 	}
 
-	trackedSet := make(map[string]bool, len(repos))
 	accumulators := make(map[string]*repoAccumulator, len(repos))
 	for _, r := range repos {
 		key := r.Owner + "/" + r.Name
-		trackedSet[key] = true
 		accumulators[key] = newRepoAccumulator(r.Owner, r.Name)
 	}
 
@@ -154,7 +131,7 @@ func (h *HourlyArchiveCollector) Collect(ctx context.Context, repos []RepoRef, w
 			continue
 		}
 
-		bytesRead, err := h.processArchive(resp.Body, trackedSet, accumulators)
+		bytesRead, err := h.processArchive(ctx, resp.Body, accumulators)
 		resp.Body.Close()
 		totalBytes += bytesRead
 
@@ -205,7 +182,7 @@ func (cr *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (h *HourlyArchiveCollector) processArchive(body io.Reader, trackedSet map[string]bool, accs map[string]*repoAccumulator) (int64, error) {
+func (h *HourlyArchiveCollector) processArchive(ctx context.Context, body io.Reader, accs map[string]*repoAccumulator) (int64, error) {
 	cr := &countingReader{reader: body}
 
 	start := time.Now()
@@ -274,9 +251,9 @@ func (h *HourlyArchiveCollector) processArchive(body io.Reader, trackedSet map[s
 
 	if h.exporter != nil {
 		decodeDur := time.Since(start)
-		h.exporter.RecordGHArchiveDecodeDuration(context.Background(), decodeDur)
-		h.exporter.RecordGHArchiveEventsFiltered(context.Background(), true, kept)
-		h.exporter.RecordGHArchiveEventsFiltered(context.Background(), false, discarded)
+		h.exporter.RecordGHArchiveDecodeDuration(ctx, decodeDur)
+		h.exporter.RecordGHArchiveEventsFiltered(ctx, true, kept)
+		h.exporter.RecordGHArchiveEventsFiltered(ctx, false, discarded)
 	}
 
 	return cr.n, nil

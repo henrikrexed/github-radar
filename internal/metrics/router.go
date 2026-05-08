@@ -112,6 +112,13 @@ func (r *Router) IsFallbackEnabled() bool {
 	return r.enabled
 }
 
+// IsFallbackActive reports whether the router is currently routing to the
+// gharchive backend (i.e. API headroom is below the threshold). Returns false
+// when gharchive is disabled or when there is sufficient rate-limit headroom.
+func (r *Router) IsFallbackActive() bool {
+	return r.shouldFallback()
+}
+
 func (r *Router) Status() string {
 	if !r.enabled {
 		return "live_only"

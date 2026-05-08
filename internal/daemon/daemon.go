@@ -483,8 +483,11 @@ func (d *Daemon) runScan() {
 		// Normalize scores after scan
 		d.scanner.NormalizeAllScores()
 
-		// Run gharchive fallback collection if enabled and budget is low (ISI-815).
-		if d.router != nil {
+		// Run gharchive fallback collection when the GitHub API budget is
+		// below the configured threshold (ISI-815). Skipped when budget is
+		// healthy to avoid making duplicate API calls alongside the scan
+		// that just ran.
+		if d.router != nil && d.router.IsFallbackActive() {
 			d.runFallbackCollection(repos)
 		}
 
