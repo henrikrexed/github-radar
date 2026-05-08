@@ -502,12 +502,14 @@ func (d *Daemon) runScan() {
 			"failed", result.Failed,
 			"skipped", result.Skipped,
 			"duration", scanDur)
-	} else if d.router != nil {
+	} else if d.router != nil && d.router.IsFallbackActive() {
 		// (ISI-922) Scan produced no results — try gharchive fallback so
 		// dashboards are not left completely empty.  Previously the
 		// fallback ran unconditionally after every successful scan,
 		// overwriting correct absolute metrics (stars, forks, contributors,
 		// growth_score) with gharchive delta-only partial data.
+		// Gate with IsFallbackActive() to restrict to gharchive path only,
+		// avoiding a redundant live-API sweep when rate limit is healthy.
 		d.runFallbackCollection(repos)
 
 		if d.exporter != nil {
@@ -677,8 +679,9 @@ func (d *Daemon) runClassification() {
 
 // runFallbackCollection runs the gharchive.org fallback collector when the
 // GitHub API budget headroom is below the configured threshold (ISI-815).
-// The router decides internally whether to use gharchive or skip; this
-// method is a no-op when the router determines budget is healthy.
+// Callers should gate with IsFallbackActive() before invoking to restrict
+// the fallback to the gharchive path and avoid a redundant live-API sweep
+// when rate limit is healthy.
 func (d *Daemon) runFallbackCollection(repos []github.Repo) {
 	refs := make([]metrics.RepoRef, len(repos))
 	for i, r := range repos {
