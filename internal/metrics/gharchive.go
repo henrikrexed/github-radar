@@ -164,6 +164,7 @@ func (h *HourlyArchiveCollector) Collect(ctx context.Context, repos []RepoRef, w
 			IssueVelocity: float64(len(acc.openedIssues)) / daysElapsed,
 			ReleaseDates:  acc.releases,
 			CollectedAt:   now,
+			Partial:       true,
 		}
 		results = append(results, cm)
 	}

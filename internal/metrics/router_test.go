@@ -2,6 +2,9 @@ package metrics
 
 import (
 	"testing"
+	"time"
+
+	"github.com/hrexed/github-radar/internal/state"
 )
 
 func TestRouterConfig_Defaults(t *testing.T) {
@@ -164,5 +167,131 @@ func TestSplitRepo(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ISI-922 regression test: UpdateStoreFromCollected with Partial=true must
+// preserve absolute values (Stars, Forks, Contributors, GrowthScore) from
+// the previous state instead of overwriting them with gharchive delta counts.
+func TestUpdateStoreFromCollected_PartialPreservesAbsoluteValues(t *testing.T) {
+	store := state.NewStore("")
+
+	store.SetRepoState("kubernetes/kubernetes", state.RepoState{
+		Owner:             "kubernetes",
+		Name:              "kubernetes",
+		Stars:             105000,
+		Forks:             38000,
+		Contributors:      4200,
+		GrowthScore:       87.5,
+		StarVelocity:      150.0,
+		StarAcceleration:  2.1,
+		ForkVelocity:      30.0,
+		PRVelocity:        12.0,
+		IssueVelocity:     8.0,
+		ContributorGrowth: 0.05,
+		NormalizedGrowthScore: 0.92,
+		RecentReleaseDates: []time.Time{time.Now()},
+		LatestReleaseAt:   time.Now().Add(-24 * time.Hour),
+		ETag:              "abc123",
+		LastModified:      "Wed, 08 May 2026 00:00:00 GMT",
+		LastCollected:     time.Now().Add(-1 * time.Hour),
+	})
+
+	partialResults := []CollectedMetrics{
+		{
+			Owner:         "kubernetes",
+			Name:          "kubernetes",
+			Stars:         5,
+			Forks:         2,
+			StarVelocity:  7.2,
+			ForkVelocity:  2.8,
+			PRVelocity:    1.5,
+			IssueVelocity: 0.9,
+			CollectedAt:   time.Now(),
+			Partial:       true,
+		},
+	}
+
+	UpdateStoreFromCollected(store, partialResults, func(fullName string) *state.RepoState {
+		return store.GetRepoState(fullName)
+	})
+
+	result := store.GetRepoState("kubernetes/kubernetes")
+	if result == nil {
+		t.Fatal("repo state is nil after update")
+	}
+
+	if result.Stars != 105000 {
+		t.Errorf("Stars = %d, want 105000 (absolute preserved, not overwritten by delta 5)", result.Stars)
+	}
+	if result.Forks != 38000 {
+		t.Errorf("Forks = %d, want 38000 (absolute preserved)", result.Forks)
+	}
+	if result.Contributors != 4200 {
+		t.Errorf("Contributors = %d, want 4200 (preserved from previous state)", result.Contributors)
+	}
+	if result.GrowthScore != 87.5 {
+		t.Errorf("GrowthScore = %v, want 87.5 (preserved from previous state)", result.GrowthScore)
+	}
+	if result.NormalizedGrowthScore != 0.92 {
+		t.Errorf("NormalizedGrowthScore = %v, want 0.92 (preserved)", result.NormalizedGrowthScore)
+	}
+	if result.StarVelocity != 7.2 {
+		t.Errorf("StarVelocity = %v, want 7.2 (updated from partial)", result.StarVelocity)
+	}
+	if result.ForkVelocity != 2.8 {
+		t.Errorf("ForkVelocity = %v, want 2.8 (updated from partial)", result.ForkVelocity)
+	}
+	if result.PRVelocity != 1.5 {
+		t.Errorf("PRVelocity = %v, want 1.5 (updated from partial)", result.PRVelocity)
+	}
+	if result.IssueVelocity != 0.9 {
+		t.Errorf("IssueVelocity = %v, want 0.9 (updated from partial)", result.IssueVelocity)
+	}
+	if result.ETag != "abc123" {
+		t.Errorf("ETag = %q, want abc123 (preserved)", result.ETag)
+	}
+}
+
+// ISI-922: Non-partial (live API) results should still overwrite completely.
+func TestUpdateStoreFromCollected_FullOverwritesCompletely(t *testing.T) {
+	store := state.NewStore("")
+
+	store.SetRepoState("kubernetes/kubernetes", state.RepoState{
+		Owner:   "kubernetes",
+		Name:    "kubernetes",
+		Stars:   105000,
+		Forks:   38000,
+		ETag:    "old-etag",
+		LastCollected: time.Now().Add(-2 * time.Hour),
+	})
+
+	fullResults := []CollectedMetrics{
+		{
+			Owner:       "kubernetes",
+			Name:        "kubernetes",
+			Stars:       105100,
+			Forks:       38010,
+			CollectedAt: time.Now(),
+		},
+	}
+
+	UpdateStoreFromCollected(store, fullResults, func(fullName string) *state.RepoState {
+		return store.GetRepoState(fullName)
+	})
+
+	result := store.GetRepoState("kubernetes/kubernetes")
+	if result == nil {
+		t.Fatal("repo state is nil after update")
+	}
+
+	if result.Stars != 105100 {
+		t.Errorf("Stars = %d, want 105100 (full overwrite)", result.Stars)
+	}
+	if result.Forks != 38010 {
+		t.Errorf("Forks = %d, want 38010 (full overwrite)", result.Forks)
+	}
+	if result.ETag != "old-etag" {
+		t.Errorf("ETag = %q, want old-etag (preserved from prev)", result.ETag)
 	}
 }

@@ -164,6 +164,46 @@ func UpdateStoreFromCollected(store *state.Store, results []CollectedMetrics, pr
 		fullName := m.Owner + "/" + m.Name
 		prev := prevStates(fullName)
 
+		if m.Partial && prev != nil {
+			// (ISI-922) Partial collectors (e.g. gharchive fallback) produce
+			// delta/derived metrics only.  Preserve the existing absolute
+			// values so that dashboards do not drop to near-zero.
+			newState := state.RepoState{
+				Owner:              m.Owner,
+				Name:               m.Name,
+				Stars:              prev.Stars,
+				Forks:              prev.Forks,
+				Contributors:       prev.Contributors,
+				MergedPRs7d:        prev.MergedPRs7d,
+				NewIssues7d:        prev.NewIssues7d,
+				LastCollected:      m.CollectedAt,
+				StarVelocity:       m.StarVelocity,
+				StarAcceleration:   prev.StarAcceleration,
+				ForkVelocity:       m.ForkVelocity,
+				ReleaseCadence:     prev.ReleaseCadence,
+				PRVelocity:         m.PRVelocity,
+				IssueVelocity:      m.IssueVelocity,
+				ContributorGrowth:  prev.ContributorGrowth,
+				GrowthScore:        prev.GrowthScore,
+				NormalizedGrowthScore: prev.NormalizedGrowthScore,
+				RecentReleaseDates: prev.RecentReleaseDates,
+				ETag:               prev.ETag,
+				LastModified:       prev.LastModified,
+				StarsPrev:          prev.StarsPrev,
+				ForksPrev:          prev.ForksPrev,
+				ContributorsPrev:   prev.ContributorsPrev,
+				LatestReleaseAt:    prev.LatestReleaseAt,
+			}
+			if len(m.ReleaseDates) > 0 {
+				newState.RecentReleaseDates = m.ReleaseDates
+			}
+			if !m.LatestReleaseAt.IsZero() {
+				newState.LatestReleaseAt = m.LatestReleaseAt
+			}
+			store.SetRepoState(fullName, newState)
+			continue
+		}
+
 		newState := state.RepoState{
 			Owner:              m.Owner,
 			Name:               m.Name,
