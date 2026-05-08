@@ -20,8 +20,8 @@ type Config struct {
 }
 
 type CollectorConfig struct {
-	GHArchive             GHArchiveConfig `yaml:"gharchive"`
-	FallbackThresholdPct  float64         `yaml:"fallback_threshold_pct"`
+	GHArchive            GHArchiveConfig `yaml:"gharchive"`
+	FallbackThresholdPct float64         `yaml:"fallback_threshold_pct"`
 }
 
 type GHArchiveConfig struct {

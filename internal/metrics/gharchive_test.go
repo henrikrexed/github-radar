@@ -29,9 +29,13 @@ func makeGZippedArchive(events []ghArchiveEvent) ([]byte, error) {
 
 func makeTestEvent(eventType, repoName, actorLogin string) ghArchiveEvent {
 	return ghArchiveEvent{
-		Type:  eventType,
-		Repo:  struct{ Name string `json:"name"` }{Name: repoName},
-		Actor: struct{ Login string `json:"login"` }{Login: actorLogin},
+		Type: eventType,
+		Repo: struct {
+			Name string `json:"name"`
+		}{Name: repoName},
+		Actor: struct {
+			Login string `json:"login"`
+		}{Login: actorLogin},
 	}
 }
 

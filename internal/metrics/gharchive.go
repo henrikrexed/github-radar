@@ -14,8 +14,8 @@ import (
 )
 
 type ghArchiveEvent struct {
-	Type  string `json:"type"`
-	Repo  struct {
+	Type string `json:"type"`
+	Repo struct {
 		Name string `json:"name"`
 	} `json:"repo"`
 	Payload json.RawMessage `json:"payload"`
@@ -91,6 +91,7 @@ func NewHourlyArchiveCollector(baseURL string, timeout time.Duration, exporter *
 		exporter:   exporter,
 	}
 }
+
 
 func (h *HourlyArchiveCollector) Collect(ctx context.Context, repos []RepoRef, window time.Duration) ([]CollectedMetrics, error) {
 	if len(repos) == 0 {

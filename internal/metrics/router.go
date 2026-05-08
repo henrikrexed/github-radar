@@ -22,9 +22,9 @@ type Router struct {
 }
 
 type RouterConfig struct {
-	GHArchiveEnabled   bool
-	GHArchiveBaseURL   string
-	GHArchiveTimeout   time.Duration
+	GHArchiveEnabled     bool
+	GHArchiveBaseURL     string
+	GHArchiveTimeout     time.Duration
 	FallbackThresholdPct float64
 }
 

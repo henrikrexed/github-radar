@@ -89,11 +89,11 @@ type Exporter struct {
 	classificationRunCount metric.Int64Counter
 
 	// Collector router instruments (ISI-815).
-	collectorActiveGauge       metric.Int64Gauge
-	fallbackTripCount          metric.Int64Counter
-	gharchiveBytesDownloaded   metric.Int64Counter
-	gharchiveDecodeDuration    metric.Float64Histogram
-	gharchiveEventsFiltered    metric.Int64Counter
+	collectorActiveGauge     metric.Int64Gauge
+	fallbackTripCount        metric.Int64Counter
+	gharchiveBytesDownloaded metric.Int64Counter
+	gharchiveDecodeDuration  metric.Float64Histogram
+	gharchiveEventsFiltered  metric.Int64Counter
 }
 
 // NewExporter creates a new metrics exporter.
