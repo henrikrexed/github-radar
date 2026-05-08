@@ -177,24 +177,24 @@ func TestUpdateStoreFromCollected_PartialPreservesAbsoluteValues(t *testing.T) {
 	store := state.NewStore("")
 
 	store.SetRepoState("kubernetes/kubernetes", state.RepoState{
-		Owner:             "kubernetes",
-		Name:              "kubernetes",
-		Stars:             105000,
-		Forks:             38000,
-		Contributors:      4200,
-		GrowthScore:       87.5,
-		StarVelocity:      150.0,
-		StarAcceleration:  2.1,
-		ForkVelocity:      30.0,
-		PRVelocity:        12.0,
-		IssueVelocity:     8.0,
-		ContributorGrowth: 0.05,
+		Owner:                 "kubernetes",
+		Name:                  "kubernetes",
+		Stars:                 105000,
+		Forks:                 38000,
+		Contributors:          4200,
+		GrowthScore:           87.5,
+		StarVelocity:          150.0,
+		StarAcceleration:      2.1,
+		ForkVelocity:          30.0,
+		PRVelocity:            12.0,
+		IssueVelocity:         8.0,
+		ContributorGrowth:     0.05,
 		NormalizedGrowthScore: 0.92,
-		RecentReleaseDates: []time.Time{time.Now()},
-		LatestReleaseAt:   time.Now().Add(-24 * time.Hour),
-		ETag:              "abc123",
-		LastModified:      "Wed, 08 May 2026 00:00:00 GMT",
-		LastCollected:     time.Now().Add(-1 * time.Hour),
+		RecentReleaseDates:    []time.Time{time.Now()},
+		LatestReleaseAt:       time.Now().Add(-24 * time.Hour),
+		ETag:                  "abc123",
+		LastModified:          "Wed, 08 May 2026 00:00:00 GMT",
+		LastCollected:         time.Now().Add(-1 * time.Hour),
 	})
 
 	partialResults := []CollectedMetrics{
@@ -258,11 +258,11 @@ func TestUpdateStoreFromCollected_FullOverwritesCompletely(t *testing.T) {
 	store := state.NewStore("")
 
 	store.SetRepoState("kubernetes/kubernetes", state.RepoState{
-		Owner:   "kubernetes",
-		Name:    "kubernetes",
-		Stars:   105000,
-		Forks:   38000,
-		ETag:    "old-etag",
+		Owner:         "kubernetes",
+		Name:          "kubernetes",
+		Stars:         105000,
+		Forks:         38000,
+		ETag:          "old-etag",
 		LastCollected: time.Now().Add(-2 * time.Hour),
 	})
 
