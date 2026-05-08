@@ -8,6 +8,9 @@ GitHub Radar follows a pipeline architecture:
 GitHub API → Collector → Scorer → Exporter → OTel Backend
                 ↕                     ↕
             State Store          OTLP HTTP
+                ↕
+         gharchive.org
+         (fallback)
 
 GitHub API → Classifier → SQLite DB
                  ↕
@@ -27,6 +30,10 @@ GitHub API → Classifier → SQLite DB
 | **Scoring** | `internal/scoring` | Growth velocity/acceleration calculation, composite scoring |
 | **State Store** | `internal/state` | JSON persistence with atomic writes, thread-safe access |
 | **Metrics** | `internal/metrics` | OTel SDK setup, metric recording, OTLP export |
+| **MetricsCollector** | `internal/metrics` | Interface for pluggable collection backends (`MetricsCollector` interface) |
+| **LiveAPICollector** | `internal/metrics` | Wraps existing `internal/github` client for live API collection |
+| **HourlyArchiveCollector** | `internal/metrics` | Downloads and processes gharchive.org hourly `.json.gz` files |
+| **Router** | `internal/metrics` | Circuit breaker that selects between live API and gharchive based on budget headroom |
 | **Daemon** | `internal/daemon` | Scheduling, HTTP endpoints, signal handling, config reload |
 | **Classification** | `internal/classification` | LLM-based category classification via Ollama (prompt building, API client, pipeline) |
 | **Database** | `internal/database` | SQLite persistence for classification state, README hashes, reclassification tracking |
@@ -46,6 +53,34 @@ GitHub API → Classifier → SQLite DB
 5. **Scoring** — Calculate velocities and composite growth score
 6. **Export** — Record all metrics via OTel SDK, flush to OTLP endpoint
 7. **Save State** — Atomic write of updated state to JSON file
+
+### Collector Router (gharchive.org Fallback)
+
+When `collector.gharchive.enabled: true`, the collection step (step 4 above) is routed through a circuit breaker:
+
+```
+                    ┌─────────────────┐
+                    │     Router      │
+                    │  (circuit brkr) │
+                    └───────┬─────────┘
+                            │
+              ┌─────────────┴──────────────┐
+              │                            │
+    headroom >= threshold         headroom < threshold
+              │                            │
+    ┌─────────▼──────────┐     ┌───────────▼───────────┐
+    │  LiveAPICollector  │     │ HourlyArchiveCollector │
+    │  (GitHub REST API) │     │  (gharchive.org)       │
+    └────────────────────┘     └────────────────────────┘
+```
+
+1. **Router checks budget** — Reads `X-RateLimit-Remaining` / `X-RateLimit-Limit` from the GitHub client
+2. **Headroom calculation** — `headroom = remaining / limit`
+3. **Trip condition** — If `headroom < fallback_threshold_pct` (default 0.25), switch to gharchive for this cycle
+4. **gharchive collection** — Download hourly `.json.gz` files for each hour in the scan window, stream gzip+JSON decode, filter for tracked repos
+5. **Re-evaluation next cycle** — No sticky state. If budget recovers (rate limit reset), router returns to live API
+
+The fallback is bandwidth-only — no authentication, no API keys, no GCP infrastructure. It fires approximately 25% of cycles in the worst case when tracking large repo sets.
 
 ### API Calls per Repository
 
@@ -148,6 +183,7 @@ GitHub API allows 5,000 requests/hour for authenticated users. GitHub Radar:
 - Configurable rate cap (default: 4000, leaving buffer)
 - Uses conditional requests (ETag) to reduce calls for unchanged repos
 - Skips individual repos on error rather than failing the entire scan
+- **gharchive.org fallback** — when enabled, automatically switches to downloading public event archives when budget headroom drops below the configured threshold (default: 25%). No API budget is consumed during fallback cycles.
 
 ## Daemon Architecture
 
@@ -183,7 +219,12 @@ github-radar/
 │   ├── discovery/             # Topic-based discovery
 │   ├── github/                # GitHub API client
 │   ├── logging/               # Structured logging
-│   ├── metrics/               # OTel metrics
+│   ├── metrics/                # OTel metrics + collector backends
+│   │   ├── collector.go       # MetricsCollector interface + types
+│   │   ├── live.go            # LiveAPICollector (wraps github client)
+│   │   ├── gharchive.go       # HourlyArchiveCollector (gharchive.org)
+│   │   ├── router.go          # Circuit breaker + backend routing
+│   │   └── exporter.go        # OTel SDK setup, instruments, OTLP export
 │   ├── repository/            # Repo management
 │   ├── scoring/               # Growth scoring
 │   └── state/                 # State persistence

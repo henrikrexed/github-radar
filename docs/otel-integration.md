@@ -56,6 +56,31 @@ Each metric includes the following attributes (dimensions):
 | `language` | Primary programming language | `Go` |
 | `category` | Assigned category | `cncf` |
 
+### Collector Metrics (gharchive.org Fallback)
+
+When the gharchive.org fallback is enabled (`collector.gharchive.enabled: true`), the following metrics are exported to monitor the collector router and archive processing:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `collector_active` | Gauge | Active collector backend (1=active, 0=inactive). Attribute: `backend` = `live` or `gharchive`. |
+| `fallback_trip_count_total` | Counter | Number of times the router switched from live API to gharchive fallback. |
+| `gharchive_archive_bytes_downloaded_total` | Counter | Total bytes downloaded from gharchive.org hourly archives. |
+| `gharchive_decode_duration_ms` | Histogram | Duration to decode and filter a single hourly archive file (gzip decompress + JSON stream). |
+| `gharchive_events_filtered_total` | Counter | Events processed from gharchive archives. Attribute: `kept` = `true` (tracked repo) or `false` (discarded). |
+
+#### Collector Metric Dimensions
+
+| Attribute | Description | Values |
+|-----------|-------------|--------|
+| `backend` | Active collector backend | `live`, `gharchive` |
+| `kept` | Whether the event matched a tracked repo | `true`, `false` |
+
+#### Dashboard Recommendations
+
+- Alert on `fallback_trip_count_total` increasing — sustained fallback usage indicates the tracked repo set may be too large for the current scan interval
+- Monitor `gharchive_events_filtered_total{kept="false"}` to understand the discard ratio (typically >99%)
+- Use `gharchive_decode_duration_ms` to track archive processing performance
+
 ### Resource Attributes
 
 | Attribute | Description |

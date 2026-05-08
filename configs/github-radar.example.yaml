@@ -301,6 +301,16 @@ classification:
 exclusions:
   - example-org/example-repo
 
+# Collector configuration (ISI-815 — gharchive.org rate-limit fallback)
+# When enabled, the router switches from live GitHub API to gharchive.org
+# hourly archive downloads when API budget headroom drops below the threshold.
+collector:
+  gharchive:
+    enabled: false                              # default: false — zero behavior change when disabled
+    base_url: https://data.gharchive.org        # gharchive.org hourly archive base URL
+    http_timeout: 60s                           # per-hour-file download timeout
+  fallback_threshold_pct: 0.25                  # trip fallback when remaining/limit < 0.25
+
 # Repositories to track with their categories
 # If no categories specified, "default" is used
 repositories:

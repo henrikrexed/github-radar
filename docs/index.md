@@ -7,7 +7,7 @@ GitHub Radar scans GitHub for repositories showing unusual growth patterns and e
 ## How It Works
 
 1. **Discover** — GitHub Radar queries the GitHub Search API for repositories matching configured topics (e.g., `kubernetes`, `ebpf`, `wasm`)
-2. **Collect** — For each tracked repository, it collects stars, forks, PRs, issues, contributors, and release data
+2. **Collect** — For each tracked repository, it collects stars, forks, PRs, issues, contributors, and release data via the GitHub API. When API budget runs low, it automatically falls back to [gharchive.org](https://www.gharchive.org/) hourly archives
 3. **Score** — A weighted growth score is computed from star velocity, acceleration, contributor growth, and activity metrics
 4. **Export** — All metrics are exported via OTLP HTTP to your observability backend
 5. **Alert** — Your observability platform (Dynatrace, Grafana, etc.) handles dashboards and alerting
@@ -39,6 +39,7 @@ See [Installation](installation.md) for download and setup instructions.
 | **OpenTelemetry Export** | OTLP HTTP metrics to Dynatrace, Grafana, Prometheus, or any OTel-compatible backend |
 | **Background Daemon** | Scheduled scanning with HTTP health/status endpoints |
 | **LLM Classification** | Automatic CNCF category classification via Ollama with configurable categories, confidence thresholds, and README-based reclassification |
+| **gharchive.org Fallback** | Automatic circuit breaker switches to hourly archive downloads when GitHub API budget runs low — scale to 500+ repos without hitting rate limits |
 | **CLI Management** | Add, remove, list, discover, classify, and exclude repositories |
 | **Cross-Platform** | Native binaries for Linux (amd64/arm64), macOS (Intel/Apple Silicon), and Windows |
 | **Docker Support** | Multi-stage Docker build with health checks, runs as non-root user |

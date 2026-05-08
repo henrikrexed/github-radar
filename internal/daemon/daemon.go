@@ -73,6 +73,7 @@ type Daemon struct {
 	store      *state.Store
 	db         *database.DB
 	server     *http.Server
+	router     *metrics.Router
 
 	mu              sync.RWMutex
 	status          Status
@@ -235,6 +236,37 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	// OTel counters and the rate-limit gauge stays fresh (T5 / ISI-716).
 	if exp != nil {
 		client.SetAPIObserver(newAPIObserver(ctx, exp))
+	}
+
+	// Create collector router for gharchive.org fallback (ISI-815).
+	// When collector.gharchive.enabled is false (default), the router
+	// is nil and all collection goes through the live GitHub API path.
+	if cfg.Collector.GHArchive.Enabled {
+		httpTimeout := 60 * time.Second
+		if cfg.Collector.GHArchive.HTTPTimeout != "" {
+			if parsed, perr := time.ParseDuration(cfg.Collector.GHArchive.HTTPTimeout); perr == nil {
+				httpTimeout = parsed
+			}
+		}
+		routerCfg := metrics.RouterConfig{
+			GHArchiveEnabled:     true,
+			GHArchiveBaseURL:     cfg.Collector.GHArchive.BaseURL,
+			GHArchiveTimeout:     httpTimeout,
+			FallbackThresholdPct: cfg.Collector.FallbackThresholdPct,
+		}
+		router := metrics.NewRouter(client, store, scoring.Weights{
+			StarVelocity:      cfg.Scoring.Weights.StarVelocity,
+			StarAcceleration:  cfg.Scoring.Weights.StarAcceleration,
+			ForkVelocity:      cfg.Scoring.Weights.ForkVelocity,
+			ReleaseCadence:    cfg.Scoring.Weights.ReleaseCadence,
+			ContributorGrowth: cfg.Scoring.Weights.ContributorGrowth,
+			PRVelocity:        cfg.Scoring.Weights.PRVelocity,
+			IssueVelocity:     cfg.Scoring.Weights.IssueVelocity,
+		}, routerCfg, exp)
+		d.router = router
+		logging.Info("gharchive fallback router enabled",
+			"threshold_pct", routerCfg.FallbackThresholdPct,
+			"base_url", routerCfg.GHArchiveBaseURL)
 	}
 
 	// Set up HTTP server
@@ -451,6 +483,11 @@ func (d *Daemon) runScan() {
 		// Normalize scores after scan
 		d.scanner.NormalizeAllScores()
 
+		// Run gharchive fallback collection if enabled and budget is low (ISI-815).
+		if d.router != nil {
+			d.runFallbackCollection(repos)
+		}
+
 		// Export metrics if not dry run
 		if d.exporter != nil {
 			d.exportMetrics()
@@ -630,6 +667,40 @@ func (d *Daemon) runClassification() {
 			"duration", summary.Duration,
 			"result", string(result))
 	}
+}
+
+// runFallbackCollection runs the gharchive.org fallback collector when the
+// GitHub API budget headroom is below the configured threshold (ISI-815).
+// The router decides internally whether to use gharchive or skip; this
+// method is a no-op when the router determines budget is healthy.
+func (d *Daemon) runFallbackCollection(repos []github.Repo) {
+	refs := make([]metrics.RepoRef, len(repos))
+	for i, r := range repos {
+		refs[i] = metrics.RepoRef{Owner: r.Owner, Name: r.Name}
+	}
+
+	window := d.daemonCfg.Interval
+	if window == 0 {
+		window = 24 * time.Hour
+	}
+
+	collected, err := d.router.Collect(d.ctx, refs, window)
+	if err != nil {
+		logging.Warn("gharchive fallback collection failed", "error", err)
+		return
+	}
+
+	if len(collected) == 0 {
+		return
+	}
+
+	logging.Info("gharchive fallback collection complete",
+		"repos_collected", len(collected),
+		"router_status", d.router.Status())
+
+	metrics.UpdateStoreFromCollected(d.store, collected, func(fullName string) *state.RepoState {
+		return d.store.GetRepoState(fullName)
+	})
 }
 
 // exportMetrics exports all repo metrics via OTel.
@@ -948,6 +1019,7 @@ type StatusResponse struct {
 	ReposTracked       int    `json:"repos_tracked"`
 	RateLimitRemaining int    `json:"rate_limit_remaining"`
 	Uptime             string `json:"uptime"`
+	CollectorBackend   string `json:"collector_backend,omitempty"`
 }
 
 // handleStatus handles the /status endpoint.
@@ -964,6 +1036,9 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if !d.nextScan.IsZero() {
 		resp.NextScan = d.nextScan.Format(time.RFC3339)
+	}
+	if d.router != nil {
+		resp.CollectorBackend = d.router.Status()
 	}
 	d.mu.RUnlock()
 
