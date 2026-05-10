@@ -56,6 +56,30 @@ Each metric includes the following attributes (dimensions):
 | `language` | Primary programming language | `Go` |
 | `category` | Assigned category | `cncf` |
 
+### Discovery Metrics (gharchive event-stream)
+
+> Status: spec-only. Live emission lands with [ISI-951](/ISI/issues/ISI-951) (collector implementation). Until then these names exist in `schemas/github-radar.yaml` and `dashboards/dt-radar-discovery.json` as the authoritative contract for the implementer.
+
+When the gharchive **discovery** source is enabled (`discovery.sources.gharchive.enabled: true`, see [ISI-953](/ISI/issues/ISI-953)), the following metrics are exported to monitor pipeline lag, throughput, dedup, and backpressure during the [ISI-956](/ISI/issues/ISI-956) Stage C soak. Distinct namespace from the metrics-fallback collector below: `github_radar.discovery.*` describes our pipeline health, the data-export metrics above describe GitHub data.
+
+| Metric | Type | Unit | Description |
+|--------|------|------|-------------|
+| `github_radar.discovery.gharchive.lag_seconds` | Gauge | `s` | Age of the most-recently-processed gharchive hourly archive (`now - archive_published_at`). |
+| `github_radar.discovery.gharchive.candidates_total` | Counter | `1` | Repo candidates surfaced from gharchive top-N + activity floor selection. Carries `event_type`. |
+| `github_radar.discovery.classifier.queue_depth` | Gauge | `1` | Pending candidates waiting on classifier. Co-owned with [ISI-954](/ISI/issues/ISI-954) backpressure. |
+| `github_radar.discovery.gharchive.dedup_ratio` | Gauge | `1` | Fraction (0.0 – 1.0) of gharchive candidates dropped because the repo is already tracked. |
+| `github_radar.discovery.gharchive.events_processed_total` | Counter | `1` | Raw gharchive events processed after event-type filter. Carries `event_type`. |
+
+#### Discovery Metric Dimensions
+
+| Attribute | Description | Allowed values |
+|-----------|-------------|----------------|
+| `event_type` | gharchive event type (carries on `candidates_total` and `events_processed_total` only — not on gauges) | `WatchEvent`, `ForkEvent`, `PushEvent`, `PullRequestEvent` |
+
+Per-repo attributes (`repo_owner`, `repo_name`, `repo_full_name`) are intentionally **not** carried on these metrics — they would explode cardinality. Per-repo telemetry stays on the existing `github.repo.*` metrics.
+
+See `docs/observability/gharchive-instrumentation-spec.md` for the implementer-facing instrumentation contract.
+
 ### Collector Metrics (gharchive.org Fallback)
 
 When the gharchive.org fallback is enabled (`collector.gharchive.enabled: true`), the following metrics are exported to monitor the collector router and archive processing:

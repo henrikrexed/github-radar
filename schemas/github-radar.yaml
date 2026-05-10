@@ -1,0 +1,137 @@
+# GitHub Radar — Local Semantic Convention Registry
+#
+# Format: OpenTelemetry Weaver-compatible semantic convention schema.
+# Owner:  Observability Agent (ISI-955)
+# Scope:  service-internal pipeline metrics for GitHub Radar.
+#
+# Naming policy (also documented in docs/observability/gharchive-instrumentation-spec.md):
+#   - github.<entity>.*       — observations about GitHub *data* (repos, stars, PRs).
+#                               Existing convention used by internal/metrics/exporter.go.
+#   - github_radar.<pipeline>.* — observations about the *GitHub Radar service itself*
+#                                 (discovery, classifier, collector pipeline health).
+#                                 Introduced in this story to cleanly separate "the data
+#                                 we collect" from "how our pipeline is performing".
+#
+# This file is consumed by:
+#   - manual review during PRs touching metric emission
+#   - future Weaver-driven type-safe instrumentation generation
+#   - the `validate-telemetry-data` capability when the Observability Agent
+#     samples live OTLP traffic against expected names/units/types
+---
+groups:
+  - id: registry.github_radar.discovery.gharchive
+    type: metric_group
+    brief: >
+      Discovery-pipeline metrics for the gharchive event-stream source.
+      Emitted by the new collector implemented in [ISI-951](/ISI/issues/ISI-951)
+      under the parent epic [ISI-950](/ISI/issues/ISI-950).
+    stability: experimental
+    metrics:
+      - id: metric.github_radar.discovery.gharchive.lag_seconds
+        name: github_radar.discovery.gharchive.lag_seconds
+        instrument: gauge
+        unit: s
+        brief: >
+          Age of the most-recently-processed gharchive hourly archive,
+          measured as `now() - archive_published_at`. Captures end-to-end
+          freshness of the discovery pipeline.
+        attributes: []
+        notes:
+          - "Expected steady-state range: 5–80 minutes (gharchive publish latency
+            ~5min after the hour ends + collector lag)."
+          - "Alert threshold candidate: > 4h sustained for 30min indicates the
+            collector is falling behind."
+        stability: experimental
+
+      - id: metric.github_radar.discovery.gharchive.candidates_per_hour
+        name: github_radar.discovery.gharchive.candidates_total
+        instrument: counter
+        unit: "1"
+        brief: >
+          Total candidate repos surfaced from gharchive event aggregation,
+          before dedup against the existing tracked-repo set.
+          DQL converts to per-hour rate via `timeseries() | summarize sum`.
+        attributes:
+          - ref: github_radar.discovery.event_type
+            requirement_level: recommended
+        notes:
+          - "AC text uses `candidates_per_hour` as a label; OTel idiom is a
+            monotonic counter (`_total`) with rate computed at query time.
+            Counter chosen so rate is not lost across collector restarts."
+        stability: experimental
+
+      - id: metric.github_radar.discovery.classifier_queue_depth
+        name: github_radar.discovery.classifier.queue_depth
+        instrument: gauge
+        unit: "1"
+        brief: >
+          Number of candidate repos waiting in the classifier queue.
+          Cross-cutting backpressure signal — populated by classifier code path,
+          NOT by the gharchive collector. Co-owned with [ISI-954](/ISI/issues/ISI-954).
+        attributes: []
+        notes:
+          - "Emitted from internal/discovery (or wherever the queue lives) on a
+            heartbeat tick or on every enqueue/dequeue. Pull > push frequency
+            recommended to keep cardinality flat."
+          - "Used by both Story 4 backpressure logic and Story 5 dashboard."
+        stability: experimental
+
+      - id: metric.github_radar.discovery.gharchive.dedup_rate
+        name: github_radar.discovery.gharchive.dedup_ratio
+        instrument: gauge
+        unit: "1"
+        brief: >
+          Fraction (0.0 – 1.0) of gharchive candidates dropped because the repo
+          is already tracked. Emitted once per processed archive over the
+          archive's own candidate set; windowed average computed in DQL.
+        attributes: []
+        notes:
+          - "Per-archive emission, not per-event. Emitting per-event would
+            multiply cardinality by the dedup denominator."
+          - "Expected steady-state: > 0.9 once tracked-set warms up."
+        stability: experimental
+
+      - id: metric.github_radar.discovery.gharchive.events_processed
+        name: github_radar.discovery.gharchive.events_processed_total
+        instrument: counter
+        unit: "1"
+        brief: >
+          Raw gharchive events processed by the discovery collector
+          (after event-type filtering, before per-repo aggregation).
+          Distinct from the existing `gharchive_events_filtered_total` counter
+          used by the metrics-fallback path ([ISI-815](/ISI/issues/ISI-815))
+          which has different semantics.
+        attributes:
+          - ref: github_radar.discovery.event_type
+            requirement_level: required
+        notes:
+          - "Carries `event_type` so dashboard can break down event mix and
+            spot drift if WatchEvent suddenly dominates."
+        stability: experimental
+
+  - id: registry.github_radar.discovery.attributes
+    type: attribute_group
+    brief: Attributes carried on github_radar.discovery.* metrics.
+    attributes:
+      - id: github_radar.discovery.event_type
+        type:
+          allow_custom_values: false
+          members:
+            - id: watch
+              value: WatchEvent
+              brief: GitHub WatchEvent (star added).
+            - id: fork
+              value: ForkEvent
+              brief: GitHub ForkEvent (repo forked).
+            - id: push
+              value: PushEvent
+              brief: GitHub PushEvent (commits pushed).
+            - id: pull_request
+              value: PullRequestEvent
+              brief: GitHub PullRequestEvent (PR opened/closed/etc.).
+        requirement_level: recommended
+        brief: >
+          gharchive event type as it appears in the raw archive payload.
+          Bounded enum — keeps cardinality multiplier at 4 maximum on
+          metrics that carry this attribute.
+        examples: ["WatchEvent", "ForkEvent"]
