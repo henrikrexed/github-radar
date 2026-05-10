@@ -155,6 +155,12 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 					MinStars:        cfg.Discovery.Sources.Languages.MinStars,
 					PushWindowsDays: cfg.Discovery.Sources.Languages.PushWindowsDays,
 				},
+				// Source (5) — gharchive discovery (Path C, ISI-950).
+				// The Enabled/TopN/Floor/MinStarsGate fields gate the
+				// promotion step in DiscoverFromGHArchive; the actual
+				// collector is constructed and wired below, after
+				// classifyDB is open so its cursor can persist.
+				GHArchive: mapDiscoveryGHArchiveConfig(cfg.Discovery.Sources.GHArchive),
 			},
 		}
 		disc = discovery.NewDiscoverer(client, store, discCfg)
@@ -236,6 +242,34 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	// OTel counters and the rate-limit gauge stays fresh (T5 / ISI-716).
 	if exp != nil {
 		client.SetAPIObserver(newAPIObserver(ctx, exp))
+	}
+
+	// Wire the gharchive *discovery* source ([ISI-967], Path C epic
+	// gap fix). When discovery.sources.gharchive.enabled is true and
+	// the metadata DB is open, construct a *discovery.GHArchiveSource
+	// and register it on the Discoverer so DiscoverFromGHArchive can
+	// promote candidates from the gharchive event-stream.
+	//
+	// Per [ISI-964 plan](/ISI/issues/ISI-964#document-plan) Decision 1
+	// this is a *separate* GHArchiveSource from the metrics-collector
+	// branch wired below ([ISI-815]). Both can run side-by-side.
+	if disc != nil && cfg.Discovery.Sources.GHArchive.Enabled {
+		var cursorStore discovery.GHArchiveCursorStore
+		if classifyDB != nil {
+			cursorStore = discovery.NewMetadataCursorStore(classifyDB)
+		}
+		if cursorStore == nil {
+			logging.Warn("gharchive discovery source requested but metadata DB unavailable; source disabled this run",
+				"hint", "open the database (XDG_DATA_HOME / ~/.local/share/github-radar/scanner.db) so the cursor can persist")
+		} else if err := wireDiscoveryGHArchive(disc, cfg.Discovery.Sources.GHArchive, cursorStore); err != nil {
+			return nil, fmt.Errorf("wiring gharchive discovery source: %w", err)
+		} else {
+			logging.Info("gharchive discovery source enabled",
+				"window_hours", cfg.Discovery.Sources.GHArchive.WindowHours,
+				"top_n_per_hour", cfg.Discovery.Sources.GHArchive.TopNPerHour,
+				"activity_floor", cfg.Discovery.Sources.GHArchive.ActivityFloor,
+				"min_stars_gate", cfg.Discovery.Sources.GHArchive.MinStarsGate)
+		}
 	}
 
 	// Create collector router for gharchive.org fallback (ISI-815).

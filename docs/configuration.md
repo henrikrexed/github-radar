@@ -307,6 +307,8 @@ Absolute counts (total stars, total forks, contributor count) are not available 
 
 ## Discovery sources — gharchive
 
+**Status (ISI-967):** flags + daemon wiring complete. Setting `discovery.sources.gharchive.enabled: true` now constructs a `*discovery.GHArchiveSource` at daemon startup and registers it with the discoverer, so the Path C firehose is live end-to-end. Earlier intermediate states (Story 1+2 only, Story 3 config flags only) shipped the surface dark.
+
 The `discovery.sources.gharchive` block configures the gharchive **event-stream discovery firehose** introduced for ISI-950 (Path C). It uses gharchive.org as the discovery feeder so GitHub Radar can break out of the ~1k tracked-repo plateau imposed by the GitHub Search API's 1000-result-per-query cap. The live GitHub API is still used for **classification** of selected candidates — gharchive is discovery only.
 
 > **Migration note — two gharchive paths, do not confuse them.**
