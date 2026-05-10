@@ -125,15 +125,19 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 
 		discovered := buildDiscoveredFromGHArchive(metrics, act)
 
-		// MaxAgeDays / MinStars from the parent Config still apply
-		// as a safety net for hobby/inactive repos that bursted
-		// once. Note the existing passesFilters checks Stars, but
-		// gharchive's raison d'être is to *escape* the star ceiling
-		// — so we deliberately bypass the MinStars check by setting
-		// metrics.Stars high enough only for that filter when the
-		// gate is off. Cleaner: inline the per-field checks we
-		// actually want.
-		if d.config.MaxAgeDays > 0 {
+		// MaxAgeDays from the parent Config still applies as a
+		// safety net for hobby/inactive repos that bursted once.
+		// We deliberately bypass passesFilters' MinStars check —
+		// gharchive's raison d'être is to escape the star ceiling
+		// — so the per-field checks we actually want are inlined.
+		//
+		// Skip MaxAgeDays when UpdatedAt is unknown: the gharchive
+		// sliding window is itself a recency floor, so "always
+		// pass" is the safe degradation path. RepoMetrics doesn't
+		// surface UpdatedAt yet (see inline TODO in
+		// buildDiscoveredFromGHArchive); when that follow-up lands,
+		// the IsZero guard becomes a no-op and the filter activates.
+		if d.config.MaxAgeDays > 0 && !discovered.UpdatedAt.IsZero() {
 			ageDays := time.Since(discovered.UpdatedAt).Hours() / 24
 			if ageDays > float64(d.config.MaxAgeDays) {
 				continue
@@ -218,4 +222,3 @@ func splitRepoName(s string) (owner, name string, ok bool) {
 	}
 	return owner, name, true
 }
-
