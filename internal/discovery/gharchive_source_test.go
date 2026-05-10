@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,17 @@ func freezeClock(t time.Time) func() time.Time {
 
 // noJitter is a deterministic jitter for retry tests.
 func noJitter(_ time.Duration) time.Duration { return 0 }
+
+// sumKeptByType returns total kept events across all event types,
+// matching the pre-ISI-961 scalar contract for tests that don't care
+// about per-type breakdown.
+func sumKeptByType(m map[string]int64) int64 {
+	var total int64
+	for _, c := range m {
+		total += c
+	}
+	return total
+}
 
 // newTestSource returns a collector wired to a fake server with a
 // frozen clock. All retry waits are kept tiny so suite latency stays
@@ -281,10 +293,20 @@ func TestProcessArchive_EndToEnd(t *testing.T) {
 	cursor := NewMemoryCursorStore()
 	rollup := newCapturingRollup()
 
-	var keptObs, discardedObs int64
+	var (
+		keptByTypeMu  sync.Mutex
+		keptByTypeObs map[string]int64
+		discardedObs  int64
+	)
 	hooks := GHArchiveHooks{
-		OnEventsProcessed: func(_ string, k, d int64) {
-			atomic.StoreInt64(&keptObs, k)
+		OnEventsProcessed: func(_ string, k map[string]int64, d int64) {
+			keptByTypeMu.Lock()
+			// Copy so the test owns the map post-hook.
+			keptByTypeObs = make(map[string]int64, len(k))
+			for t, c := range k {
+				keptByTypeObs[t] = c
+			}
+			keptByTypeMu.Unlock()
 			atomic.StoreInt64(&discardedObs, d)
 		},
 	}
@@ -302,9 +324,15 @@ func TestProcessArchive_EndToEnd(t *testing.T) {
 		t.Errorf("cursor = %q, want %q", c.LastProcessedArchive, archive)
 	}
 
-	// Filter contract: kept = 4 (3 alice + 1 bob), discarded = 2.
-	if got := atomic.LoadInt64(&keptObs); got != 4 {
-		t.Errorf("kept = %d, want 4", got)
+	// Filter contract: per-type breakdown — WatchEvent: 2, ForkEvent: 1,
+	// PushEvent: 1 (sum kept = 4), discarded = 2 (filtered IssuesEvent +
+	// empty repo).
+	keptByTypeMu.Lock()
+	gotByType := keptByTypeObs
+	keptByTypeMu.Unlock()
+	wantByType := map[string]int64{"WatchEvent": 2, "ForkEvent": 1, "PushEvent": 1}
+	if !reflect.DeepEqual(gotByType, wantByType) {
+		t.Errorf("keptByType = %+v, want %+v", gotByType, wantByType)
 	}
 	if got := atomic.LoadInt64(&discardedObs); got != 2 {
 		t.Errorf("discarded = %d, want 2", got)
@@ -792,8 +820,8 @@ func TestProcessArchive_RecoversFromMalformedLine(t *testing.T) {
 
 	var keptObs, discardedObs int64
 	hooks := GHArchiveHooks{
-		OnEventsProcessed: func(_ string, k, d int64) {
-			atomic.StoreInt64(&keptObs, k)
+		OnEventsProcessed: func(_ string, k map[string]int64, d int64) {
+			atomic.StoreInt64(&keptObs, sumKeptByType(k))
 			atomic.StoreInt64(&discardedObs, d)
 		},
 	}
@@ -841,8 +869,8 @@ func TestProcessArchive_HandlesLargeEventOver64KiB(t *testing.T) {
 
 	var keptObs, discardedObs int64
 	hooks := GHArchiveHooks{
-		OnEventsProcessed: func(_ string, k, d int64) {
-			atomic.StoreInt64(&keptObs, k)
+		OnEventsProcessed: func(_ string, k map[string]int64, d int64) {
+			atomic.StoreInt64(&keptObs, sumKeptByType(k))
 			atomic.StoreInt64(&discardedObs, d)
 		},
 	}
@@ -887,8 +915,8 @@ func TestProcessArchive_DropsOversizedLineGracefully(t *testing.T) {
 
 	var keptObs, discardedObs int64
 	hooks := GHArchiveHooks{
-		OnEventsProcessed: func(_ string, k, d int64) {
-			atomic.StoreInt64(&keptObs, k)
+		OnEventsProcessed: func(_ string, k map[string]int64, d int64) {
+			atomic.StoreInt64(&keptObs, sumKeptByType(k))
 			atomic.StoreInt64(&discardedObs, d)
 		},
 	}

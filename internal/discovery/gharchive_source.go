@@ -233,9 +233,13 @@ type GHArchiveRollupStore interface {
 //
 // Spec:
 //   - OnEventsProcessed fires once per archive after decode completes.
-//     `kept` counts events kept by the type filter for tracked repos
-//     (here: all repos seen in the firehose); `discarded` counts events
-//     that didn't match the type filter or had no usable repo name.
+//     `keptByType` maps gharchive event type to count of events kept by
+//     the type filter for tracked repos (here: all repos seen in the
+//     firehose). The map is non-nil but may be empty when no events
+//     survived the filter; total kept = sum of values. `discarded`
+//     counts events that didn't match the type filter or had no usable
+//     repo name. The map is owned by the caller after the hook returns
+//     (no further mutation by the collector).
 //   - OnLagSeconds fires once per archive on entry; lag is wall-clock
 //     minus archive-hour, useful for dashboards to spot cursor stall.
 //   - OnArchiveStart / OnArchiveComplete bracket per-archive work for
@@ -243,7 +247,7 @@ type GHArchiveRollupStore interface {
 //   - OnArchiveError fires per failed attempt (transient + final). The
 //     `attempt` counter is 1-based.
 type GHArchiveHooks struct {
-	OnEventsProcessed func(archive string, kept, discarded int64)
+	OnEventsProcessed func(archive string, keptByType map[string]int64, discarded int64)
 	OnLagSeconds      func(seconds float64)
 	OnArchiveStart    func(archive string)
 	OnArchiveComplete func(archive string, dur time.Duration)
@@ -477,13 +481,13 @@ func (s *GHArchiveSource) ProcessArchive(ctx context.Context, archive string) er
 	}
 	defer body.Close()
 
-	kept, discarded, hourAggregates, err := s.consume(ctx, hour, body)
+	keptByType, discarded, hourAggregates, err := s.consume(ctx, hour, body)
 	if err != nil {
 		return fmt.Errorf("processing archive %s: %w", archive, err)
 	}
 
 	if s.hooks.OnEventsProcessed != nil {
-		s.hooks.OnEventsProcessed(archive, kept, discarded)
+		s.hooks.OnEventsProcessed(archive, keptByType, discarded)
 	}
 
 	if s.rollup != nil && len(hourAggregates) > 0 {
@@ -506,6 +510,10 @@ func (s *GHArchiveSource) ProcessArchive(ctx context.Context, archive string) er
 		s.hooks.OnArchiveComplete(archive, time.Since(start))
 	}
 
+	var kept int64
+	for _, c := range keptByType {
+		kept += c
+	}
 	logging.Debug("gharchive_source: archive complete",
 		"archive", archive, "kept", kept, "discarded", discarded,
 		"unique_repos", len(hourAggregates))
@@ -675,10 +683,10 @@ type gharchiveEvent struct {
 // archives take seconds to decode, and we don't want to block readers
 // like TopActiveRepos that whole time. The bucket update + slide
 // happens under the write lock at the end.
-func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.Reader) (int64, int64, []GHArchiveHourAggregate, error) {
+func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.Reader) (map[string]int64, int64, []GHArchiveHourAggregate, error) {
 	gz, err := gzip.NewReader(body)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("gzip reader: %w", err)
+		return nil, 0, nil, fmt.Errorf("gzip reader: %w", err)
 	}
 	defer gz.Close()
 
@@ -700,12 +708,18 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 
 	thisArchive := make(map[string]int) // repo -> events kept this archive
 	thisArchiveTypes := make(map[string]map[string]int)
+	// keptByType is the flat per-event-type tally across all repos in
+	// this archive, surfaced through OnEventsProcessed so Story 5
+	// observability ([ISI-955](/ISI/issues/ISI-955)) can attribute the
+	// counter without re-scanning the firehose. Total kept = sum of
+	// keptByType values.
+	keptByType := make(map[string]int64, len(s.eventTypes))
 
-	var kept, discarded int64
+	var discarded int64
 	for {
 		select {
 		case <-ctx.Done():
-			return kept, discarded, nil, ctx.Err()
+			return keptByType, discarded, nil, ctx.Err()
 		default:
 		}
 
@@ -730,7 +744,6 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 			continue
 		}
 
-		kept++
 		thisArchive[evt.Repo.Name]++
 		typeMap := thisArchiveTypes[evt.Repo.Name]
 		if typeMap == nil {
@@ -738,6 +751,7 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 			thisArchiveTypes[evt.Repo.Name] = typeMap
 		}
 		typeMap[evt.Type]++
+		keptByType[evt.Type]++
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
@@ -750,7 +764,7 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 			// outside adversarial input.
 			discarded++
 		} else {
-			return kept, discarded, nil, fmt.Errorf("scan archive: %w", err)
+			return keptByType, discarded, nil, fmt.Errorf("scan archive: %w", err)
 		}
 	}
 
@@ -787,7 +801,7 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 	// after rotation, so memory stays bounded as repos go cold.
 	s.gcEmptyBuckets()
 
-	return kept, discarded, aggregates, nil
+	return keptByType, discarded, aggregates, nil
 }
 
 // cloneTypeMap returns a defensive copy so callers can mutate the
