@@ -753,3 +753,180 @@ func TestNewGHArchiveSource_PanicsOnNilCursor(t *testing.T) {
 
 // Suppress unused-import warning when test goroutines are stripped.
 var _ = fmt.Sprintf
+
+// gzipNDJSONRaw writes pre-serialized NDJSON lines (each must end with
+// '\n') into a gzip stream. Used by tests that need to inject malformed
+// or oversized lines that gzipNDJSON's json.Encoder won't produce.
+func gzipNDJSONRaw(t *testing.T, lines [][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	for _, line := range lines {
+		if _, err := gz.Write(line); err != nil {
+			t.Fatalf("write line: %v", err)
+		}
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestProcessArchive_RecoversFromMalformedLine verifies the bufio.Scanner
+// rewrite of consume() (ISI-959): a malformed line in the middle of the
+// archive cleanly increments `discarded` and lines on either side still
+// aggregate. Under the prior json.Decoder loop, a malformed token mid-
+// stream could silently drop the rest of the archive.
+func TestProcessArchive_RecoversFromMalformedLine(t *testing.T) {
+	hour := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	archive := hour.Format(gharchiveArchiveLayout)
+
+	good1 := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "alice/repoA"}})
+	bad := []byte("{not valid json mid-archive\n")
+	good2 := mustMarshalLine(t, map[string]any{"type": "ForkEvent", "repo": map[string]any{"name": "bob/repoB"}})
+	good3 := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "alice/repoA"}})
+
+	body := gzipNDJSONRaw(t, [][]byte{good1, bad, good2, good3})
+	srv := fakeArchiveServer(t, map[string][]byte{archive: body})
+	t.Cleanup(srv.Close)
+
+	var keptObs, discardedObs int64
+	hooks := GHArchiveHooks{
+		OnEventsProcessed: func(_ string, k, d int64) {
+			atomic.StoreInt64(&keptObs, k)
+			atomic.StoreInt64(&discardedObs, d)
+		},
+	}
+	src := newTestSource(t, srv.URL, hour.Add(2*time.Hour), NewMemoryCursorStore(), nil, hooks)
+
+	if err := src.ProcessArchive(context.Background(), archive); err != nil {
+		t.Fatalf("ProcessArchive: %v", err)
+	}
+
+	if got := atomic.LoadInt64(&keptObs); got != 3 {
+		t.Errorf("kept = %d, want 3 (events around the malformed line should still aggregate)", got)
+	}
+	if got := atomic.LoadInt64(&discardedObs); got != 1 {
+		t.Errorf("discarded = %d, want 1", got)
+	}
+
+	top := src.TopActiveRepos(0, 1)
+	totals := map[string]int{}
+	for _, r := range top {
+		totals[r.RepoName] = r.TotalEvents
+	}
+	if totals["alice/repoA"] != 2 || totals["bob/repoB"] != 1 {
+		t.Errorf("totals = %+v, want alice/repoA=2 bob/repoB=1", totals)
+	}
+}
+
+// TestProcessArchive_HandlesLargeEventOver64KiB verifies that a single
+// NDJSON line larger than the 64 KiB default scan buffer but well under
+// the 8 MiB cap is still aggregated. PullRequestEvent payloads with long
+// commit lists routinely cross the default cap.
+func TestProcessArchive_HandlesLargeEventOver64KiB(t *testing.T) {
+	hour := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	archive := hour.Format(gharchiveArchiveLayout)
+
+	// 200 KiB filler ⇒ a serialized line comfortably over 64 KiB but
+	// well under 8 MiB.
+	bigPayload := strings.Repeat("x", 200*1024)
+	events := []map[string]any{
+		{"type": "PullRequestEvent", "repo": map[string]any{"name": "carol/big"}, "payload": map[string]any{"filler": bigPayload}},
+		{"type": "WatchEvent", "repo": map[string]any{"name": "carol/big"}},
+	}
+	body := gzipNDJSON(t, events)
+	srv := fakeArchiveServer(t, map[string][]byte{archive: body})
+	t.Cleanup(srv.Close)
+
+	var keptObs, discardedObs int64
+	hooks := GHArchiveHooks{
+		OnEventsProcessed: func(_ string, k, d int64) {
+			atomic.StoreInt64(&keptObs, k)
+			atomic.StoreInt64(&discardedObs, d)
+		},
+	}
+	src := newTestSource(t, srv.URL, hour.Add(2*time.Hour), NewMemoryCursorStore(), nil, hooks)
+
+	if err := src.ProcessArchive(context.Background(), archive); err != nil {
+		t.Fatalf("ProcessArchive: %v", err)
+	}
+	if got := atomic.LoadInt64(&keptObs); got != 2 {
+		t.Errorf("kept = %d, want 2 (large event must still aggregate)", got)
+	}
+	if got := atomic.LoadInt64(&discardedObs); got != 0 {
+		t.Errorf("discarded = %d, want 0", got)
+	}
+	top := src.TopActiveRepos(0, 1)
+	if len(top) != 1 || top[0].RepoName != "carol/big" || top[0].TotalEvents != 2 {
+		t.Errorf("top = %+v, want carol/big with 2 events", top)
+	}
+}
+
+// TestProcessArchive_DropsOversizedLineGracefully verifies that a single
+// NDJSON line exceeding the 8 MiB scan cap is treated as a poison record:
+// counted as discarded, ProcessArchive returns nil, and earlier valid
+// events still aggregate. Lines after the oversized record in the same
+// archive cannot be recovered (bufio.Scanner cannot resume past
+// ErrTooLong); that limitation is documented in consume().
+func TestProcessArchive_DropsOversizedLineGracefully(t *testing.T) {
+	hour := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	archive := hour.Format(gharchiveArchiveLayout)
+
+	good := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "alice/before"}})
+
+	// One line whose JSON exceeds the 8 MiB cap. A long ASCII run
+	// inside a string compresses cheaply, so the gzipped archive
+	// stays small.
+	huge := strings.Repeat("x", 9*1024*1024)
+	oversized := []byte(`{"type":"PullRequestEvent","repo":{"name":"oversized/line"},"payload":{"filler":"` + huge + `"}}` + "\n")
+
+	body := gzipNDJSONRaw(t, [][]byte{good, oversized})
+	srv := fakeArchiveServer(t, map[string][]byte{archive: body})
+	t.Cleanup(srv.Close)
+
+	var keptObs, discardedObs int64
+	hooks := GHArchiveHooks{
+		OnEventsProcessed: func(_ string, k, d int64) {
+			atomic.StoreInt64(&keptObs, k)
+			atomic.StoreInt64(&discardedObs, d)
+		},
+	}
+	src := newTestSource(t, srv.URL, hour.Add(2*time.Hour), NewMemoryCursorStore(), nil, hooks)
+
+	if err := src.ProcessArchive(context.Background(), archive); err != nil {
+		t.Fatalf("ProcessArchive: %v (oversized line should be dropped, not surfaced as error)", err)
+	}
+	if got := atomic.LoadInt64(&keptObs); got != 1 {
+		t.Errorf("kept = %d, want 1 (events before the oversized line must aggregate)", got)
+	}
+	if got := atomic.LoadInt64(&discardedObs); got != 1 {
+		t.Errorf("discarded = %d, want 1 (oversized line counted once)", got)
+	}
+	top := src.TopActiveRepos(0, 1)
+	for _, r := range top {
+		if r.RepoName == "oversized/line" {
+			t.Errorf("oversized line repo unexpectedly aggregated: %+v", r)
+		}
+	}
+	var alice GHArchiveRepoActivity
+	for _, r := range top {
+		if r.RepoName == "alice/before" {
+			alice = r
+		}
+	}
+	if alice.RepoName != "alice/before" || alice.TotalEvents != 1 {
+		t.Errorf("alice/before = %+v, want 1 event", alice)
+	}
+}
+
+// mustMarshalLine returns one NDJSON line (with trailing newline) for
+// the given record. Fails the test on marshal errors.
+func mustMarshalLine(t *testing.T, v any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return append(raw, '\n')
+}

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"bufio"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -524,7 +525,20 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 	}
 	defer gz.Close()
 
-	dec := json.NewDecoder(gz)
+	// Wrap the gzip stream in a 1 MiB buffered reader: ~600 MB
+	// uncompressed per archive, so larger reads cut syscall overhead.
+	br := bufio.NewReaderSize(gz, 1<<20)
+	// Scan one NDJSON line at a time. A per-line bufio.Scanner is
+	// safer than json.Decoder here: json.Decoder keeps internal state,
+	// so a single malformed token mid-archive can silently drop the
+	// rest of the stream while only one event is counted as discarded.
+	// Scanner + json.Unmarshal makes each line independent.
+	scanner := bufio.NewScanner(br)
+	// Default 64 KiB token cap is too small for some PullRequestEvent
+	// payloads (commit lists routinely run a few hundred KiB). Allow
+	// growth up to 8 MiB per line; anything larger is treated as a
+	// poison record (see scanner.Err handling below).
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	hourBucket := hour.Truncate(time.Hour).UTC()
 
 	thisArchive := make(map[string]int) // repo -> events kept this archive
@@ -538,14 +552,18 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 		default:
 		}
 
+		if !scanner.Scan() {
+			break
+		}
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
 		var evt gharchiveEvent
-		if err := dec.Decode(&evt); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			// gharchive occasionally emits a partially-truncated
-			// final line on archive boundaries; skip and continue
-			// rather than drop the whole archive.
+		if err := json.Unmarshal(line, &evt); err != nil {
+			// A single malformed line is independent of the rest:
+			// count it as discarded and move on.
 			discarded++
 			continue
 		}
@@ -563,6 +581,20 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 			thisArchiveTypes[evt.Repo.Name] = typeMap
 		}
 		typeMap[evt.Type]++
+	}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			// One line in this archive exceeds the 8 MiB cap. Drop
+			// it from the kept set, count it as discarded, and stop
+			// here: bufio.Scanner cannot recover past ErrTooLong, so
+			// any tail beyond the oversized line is lost — but the
+			// largest gharchive lines observed in practice are a few
+			// MiB at most, so the cap is effectively unreachable
+			// outside adversarial input.
+			discarded++
+		} else {
+			return kept, discarded, nil, fmt.Errorf("scan archive: %w", err)
+		}
 	}
 
 	s.mu.Lock()
