@@ -126,6 +126,32 @@ func NewDiscoveryMeters(meterName string) (*DiscoveryMeters, error) {
 }
 ```
 
+## Known upstream contract gap — [ISI-961](/ISI/issues/ISI-961)
+
+Story 1 ([ISI-951](/ISI/issues/ISI-951)) landed in `in_review` (`feat/isi-951-gharchive-collector` branch, commit `a45a72d`) with this hook signature in `internal/discovery/gharchive_source.go:224`:
+
+```go
+// As-shipped in ISI-951 — INSUFFICIENT for events_processed_total{event_type=...}
+type GHArchiveHooks struct {
+    OnEventsProcessed func(archive string, kept, discarded int64)
+    // ...
+}
+```
+
+Code review (Code Reviewer, [ISI-955 thread](/ISI/issues/ISI-955)) flagged that scalar `kept` cannot drive the per-`event_type` breakdown the spec locks in below. [ISI-961](/ISI/issues/ISI-961) tracks the signature change to:
+
+```go
+// Required for the spec to wire correctly
+type GHArchiveHooks struct {
+    OnEventsProcessed func(archive string, keptPerType map[string]int64, discarded int64)
+    // ...
+}
+```
+
+**Wire-up sequencing:** wait for [ISI-961](/ISI/issues/ISI-961) to merge before binding the discovery meters into the hooks. Wiring against the as-shipped scalar would emit `events_processed_total` with no `event_type` attribute and break the dashboard's "Events processed by type" tile + the cardinality-bound test (#3 below).
+
+The four other instruments (`lag_seconds`, `dedup_ratio`, `queue_depth`, `candidates_total`) are unaffected by this gap — they pull from different call sites that already have the right shape.
+
 ## Emission points (suggested call sites)
 
 ```go
@@ -133,10 +159,15 @@ func NewDiscoveryMeters(meterName string) (*DiscoveryMeters, error) {
 ageSec := time.Since(archive.PublishedAt).Seconds()
 dm.LagSeconds.Record(ctx, ageSec)
 
-// Per event after type filter passes:
-dm.EventsProcessed.Add(ctx, 1, metric.WithAttributes(
-    attribute.String("event_type", evt.Type),
-))
+// Per archive after ISI-961's signature change lands:
+hooks.OnEventsProcessed = func(archive string, keptPerType map[string]int64, discarded int64) {
+    for evtType, n := range keptPerType {
+        dm.EventsProcessed.Add(ctx, n, metric.WithAttributes(
+            attribute.String("event_type", evtType),
+        ))
+    }
+    // discarded counter is informational — keep separate or drop it on the floor
+}
 
 // After the per-archive top-N + activity-floor selector runs:
 for _, candidate := range selectedCandidates {
