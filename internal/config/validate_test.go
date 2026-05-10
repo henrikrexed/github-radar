@@ -397,3 +397,125 @@ func TestValidationError_EmptyIssues(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", err.Error(), "configuration validation failed")
 	}
 }
+
+// validBaseConfig returns a Config that passes Validate(); tests below
+// mutate only the discovery.sources.gharchive sub-config to exercise the
+// new bound checks added in ISI-953.
+func validBaseConfig() *Config {
+	return &Config{
+		GitHub: GithubConfig{
+			Token:     "valid-token",
+			RateLimit: 4000,
+		},
+		Otel: OtelConfig{
+			Endpoint:    "http://localhost:4318",
+			ServiceName: "test",
+		},
+		Discovery: DiscoveryConfig{
+			Enabled:            true,
+			MinStars:           100,
+			MaxAgeDays:         90,
+			AutoTrackThreshold: 50,
+		},
+	}
+}
+
+func TestValidate_GHArchiveDiscovery_DefaultsAreValid(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GitHub.Token = "valid-token"
+	cfg.Otel.Endpoint = "http://localhost:4318"
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("DefaultConfig() should validate cleanly: %v", err)
+	}
+}
+
+func TestValidate_GHArchiveDiscovery_AbsentSectionAccepted(t *testing.T) {
+	// Zero values across the board mean "section omitted; runtime fills
+	// defaults". Validate must not flag this.
+	cfg := validBaseConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("absent gharchive sub-config must validate: %v", err)
+	}
+}
+
+func TestValidate_GHArchiveDiscovery_NegativeValuesRejected(t *testing.T) {
+	cases := map[string]func(*DiscoveryGHArchiveConfig){
+		"window_hours":   func(g *DiscoveryGHArchiveConfig) { g.WindowHours = -1 },
+		"top_n_per_hour": func(g *DiscoveryGHArchiveConfig) { g.TopNPerHour = -1 },
+		"activity_floor": func(g *DiscoveryGHArchiveConfig) { g.ActivityFloor = -1 },
+		"min_stars_gate": func(g *DiscoveryGHArchiveConfig) { g.MinStarsGate = -1 },
+		"daily_cap_warn": func(g *DiscoveryGHArchiveConfig) { g.DailyCapWarn = -1 },
+		"daily_cap_hard": func(g *DiscoveryGHArchiveConfig) { g.DailyCapHard = -1 },
+	}
+
+	for field, mutate := range cases {
+		t.Run(field, func(t *testing.T) {
+			cfg := validBaseConfig()
+			mutate(&cfg.Discovery.Sources.GHArchive)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected error for negative %s", field)
+			}
+			if !strings.Contains(err.Error(), "gharchive."+field) {
+				t.Errorf("error should mention discovery.sources.gharchive.%s: %v", field, err)
+			}
+		})
+	}
+}
+
+func TestValidate_GHArchiveDiscovery_EnabledRequiresPositives(t *testing.T) {
+	// Flag flip with zeros: every required positive int surfaces as a
+	// specific issue so the operator knows what to fix.
+	cfg := validBaseConfig()
+	cfg.Discovery.Sources.GHArchive.Enabled = true
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("enabling gharchive without sizing knobs should fail validation")
+	}
+	for _, want := range []string{
+		"window_hours",
+		"top_n_per_hour",
+		"daily_cap_warn",
+		"daily_cap_hard",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should call out missing %s: %v", want, err)
+		}
+	}
+}
+
+func TestValidate_GHArchiveDiscovery_WarnHardOrdering(t *testing.T) {
+	cases := []struct {
+		name string
+		warn int
+		hard int
+		ok   bool
+	}{
+		{"warn<hard", 4000, 5000, true},
+		{"warn==hard", 5000, 5000, false},
+		{"warn>hard", 6000, 5000, false},
+		{"warn=0,hard=5000", 0, 5000, true}, // 0 = unset, no cross-check
+		{"warn=4000,hard=0", 4000, 0, true}, // 0 = unset, no cross-check
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			cfg.Discovery.Sources.GHArchive.DailyCapWarn = tc.warn
+			cfg.Discovery.Sources.GHArchive.DailyCapHard = tc.hard
+
+			err := cfg.Validate()
+			if tc.ok && err != nil {
+				t.Errorf("expected valid, got: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !tc.ok && !strings.Contains(err.Error(), "daily_cap_warn") {
+				t.Errorf("error should mention daily_cap_warn: %v", err)
+			}
+		})
+	}
+}

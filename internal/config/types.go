@@ -128,6 +128,15 @@ type DiscoverySourcesConfig struct {
 	// Languages is Source (4): language-pivot search for popular
 	// projects pushed within recent windows.
 	Languages DiscoveryLanguagesConfig `yaml:"languages"`
+	// GHArchive is Source (5): the gharchive.org event-stream firehose
+	// (Path C, ISI-950). Hybrid by design — gharchive feeds discovery
+	// while the live GitHub API still classifies the candidates.
+	//
+	// Distinct from CollectorConfig.GHArchive (ISI-815 metrics
+	// fallback): same archive origin, different code path and purpose.
+	// See docs/configuration.md "Discovery sources — gharchive" for
+	// the migration note.
+	GHArchive DiscoveryGHArchiveConfig `yaml:"gharchive"`
 }
 
 // DiscoveryOrgsConfig configures org-scoped repository search.
@@ -143,6 +152,48 @@ type DiscoveryLanguagesConfig struct {
 	Names           []string `yaml:"names"`             // GitHub language identifiers
 	MinStars        int      `yaml:"min_stars"`         // Override Discovery.MinStars; 0 = inherit
 	PushWindowsDays []int    `yaml:"push_windows_days"` // pushed:>= windows in days; empty = [7]
+}
+
+// DiscoveryGHArchiveConfig configures the gharchive event-stream
+// discovery source (Path C, ISI-950). Defaults are populated by
+// DefaultConfig and bound-checked by Config.Validate so a partially
+// specified block still yields safe values.
+type DiscoveryGHArchiveConfig struct {
+	// Enabled gates the gharchive event-stream collector. Default
+	// false so the source ships dark; flip via config alone for the
+	// staged Stage C rollout.
+	Enabled bool `yaml:"enabled"`
+	// WindowHours is the sliding-window length the collector
+	// aggregates per-repo event volume across. Default 24 (matches
+	// ISI-950 Stage C acceptance gate). Bound: >= 1.
+	WindowHours int `yaml:"window_hours"`
+	// TopNPerHour is the per-hour candidate cap surfaced to the
+	// classifier. Default 500. Bound: >= 1.
+	TopNPerHour int `yaml:"top_n_per_hour"`
+	// ActivityFloor is the minimum total event count over the window
+	// for a repo to be eligible as a candidate. Default 10.
+	// Bound: >= 0 (0 disables the floor — every tracked repo
+	// competes for top-N).
+	ActivityFloor int `yaml:"activity_floor"`
+	// EventTypes overrides the default GitHub event-type filter.
+	// Empty falls back to the canonical
+	// [WatchEvent, ForkEvent, PushEvent, PullRequestEvent] set.
+	EventTypes []string `yaml:"event_types"`
+	// MinStarsGate is an optional hard floor on stargazer count for
+	// gharchive-discovered candidates. Default 0 — disabled, lets
+	// event volume be the sole signal initially per ISI-950 Q3.
+	// Bound: >= 0.
+	MinStarsGate int `yaml:"min_stars_gate"`
+	// DailyCapWarn is the yellow-signal threshold on candidates
+	// emitted per UTC day. The Dynatrace dashboard surfaces a warn
+	// state here; emission is NOT paused. Default 4000.
+	// Bound: >= 1 and < DailyCapHard.
+	DailyCapWarn int `yaml:"daily_cap_warn"`
+	// DailyCapHard is the circuit-breaker threshold on candidates
+	// emitted per UTC day. When reached, the source pauses emission
+	// for the rest of the day to protect classifier capacity.
+	// Default 5000. Bound: > DailyCapWarn.
+	DailyCapHard int `yaml:"daily_cap_hard"`
 }
 
 // ScoringConfig contains growth scoring settings.
@@ -224,6 +275,23 @@ func DefaultConfig() *Config {
 			MinStars:           100,
 			MaxAgeDays:         90,
 			AutoTrackThreshold: 50.0,
+			Sources: DiscoverySourcesConfig{
+				GHArchive: DiscoveryGHArchiveConfig{
+					Enabled:       false,
+					WindowHours:   24,
+					TopNPerHour:   500,
+					ActivityFloor: 10,
+					EventTypes: []string{
+						"WatchEvent",
+						"ForkEvent",
+						"PushEvent",
+						"PullRequestEvent",
+					},
+					MinStarsGate: 0,
+					DailyCapWarn: 4000,
+					DailyCapHard: 5000,
+				},
+			},
 		},
 		Scoring: ScoringConfig{
 			Weights: WeightConfig{
