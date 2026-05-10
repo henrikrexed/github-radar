@@ -65,10 +65,7 @@ func (m *MetadataCursorStore) GetCursor(_ context.Context) (GHArchiveCursor, err
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		return GHArchiveCursor{}, fmt.Errorf("decode cursor %q: %w", raw, err)
 	}
-	return GHArchiveCursor{
-		LastProcessedArchive: doc.LastProcessedArchive,
-		CompletedAt:          doc.CompletedAt,
-	}, nil
+	return GHArchiveCursor(doc), nil
 }
 
 // SetCursor persists the cursor. Atomic from the metadata layer's POV
