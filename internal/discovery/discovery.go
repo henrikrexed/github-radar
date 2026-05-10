@@ -102,6 +102,21 @@ type GHArchiveSourceConfig struct {
 	// DefaultGHArchiveMinStarsCacheTTL (7 days, matches the
 	// collector window's order of magnitude).
 	MinStarsCacheTTL time.Duration `yaml:"min_stars_cache_ttl"`
+
+	// Backpressure tunes the Story 4 ([ISI-954]) gates that protect
+	// classifier capacity from a runaway gharchive firehose. A zero
+	// substruct yields the soak-default thresholds (queue depth 1000,
+	// rate-limit headroom 80%, daily cap warn 4000 / hard 5000).
+	// Disabling backpressure entirely is done at the daemon by passing
+	// nil to SetGHArchiveBackpressure rather than via this config.
+	//
+	// Some keys here ([daily_cap_warn], [daily_cap_hard]) overlap with
+	// the [ISI-953](/ISI/issues/ISI-953) config schema currently on
+	// branch `feat/isi-953-gharchive-discovery-config`. When that lands
+	// the keys reconcile in one merge; the architect plan in
+	// [ISI-950](/ISI/issues/ISI-950#document-plan) is the single source
+	// of truth for both surfaces (defaults 4000 / 5000).
+	Backpressure GHArchiveBackpressureConfig `yaml:"backpressure"`
 }
 
 // Soak defaults for gharchive discovery, approved by architect in
@@ -240,6 +255,14 @@ type Discoverer struct {
 	// ([ISI-1005]). Nil callbacks are no-ops. Set via
 	// SetGHArchivePipelineHooks by the daemon's wiring layer.
 	ghArchivePipelineHooks GHArchivePipelineHooks
+
+	// ghArchiveBackpressure is the optional Story 4 ([ISI-954]) gate
+	// that protects classifier capacity from gharchive emission. Wired
+	// by the daemon via SetGHArchiveBackpressure. Nil when not wired
+	// (production paths that haven't migrated yet, and unit tests that
+	// don't exercise backpressure) — in that case DiscoverFromGHArchive
+	// runs without gating, preserving Story 2 behaviour.
+	ghArchiveBackpressure *GHArchiveBackpressureGate
 }
 
 // NewDiscoverer creates a new discoverer.
@@ -280,6 +303,18 @@ func (d *Discoverer) SetGHArchiveSource(src *GHArchiveSource) {
 // fields are individually safe (no-ops).
 func (d *Discoverer) SetGHArchivePipelineHooks(hooks GHArchivePipelineHooks) {
 	d.ghArchivePipelineHooks = hooks
+}
+
+// SetGHArchiveBackpressure wires the Story 4 ([ISI-954]) backpressure
+// gate. Pass nil to disable backpressure (DiscoverFromGHArchive will
+// run unguarded, matching Story 2 behaviour). The daemon constructs
+// the gate with live signals — pending-classification queue depth and
+// GitHub core REST consumption percent — then hands it here.
+//
+// Set this before calling DiscoverAll; mutating it concurrently with
+// discovery is not safe.
+func (d *Discoverer) SetGHArchiveBackpressure(g *GHArchiveBackpressureGate) {
+	d.ghArchiveBackpressure = g
 }
 
 // SetLogger sets a logging callback.
