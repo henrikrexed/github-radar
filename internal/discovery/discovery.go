@@ -43,7 +43,56 @@ type Config struct {
 type SourcesConfig struct {
 	Orgs      OrgsSourceConfig      `yaml:"orgs"`
 	Languages LanguagesSourceConfig `yaml:"languages"`
+	GHArchive GHArchiveSourceConfig `yaml:"gharchive"`
 }
+
+// GHArchiveSourceConfig configures Source (5): gharchive event-stream
+// discovery. Wires the in-process GHArchiveSource collector ([ISI-951])
+// into the discovery pipeline. The collector itself is owned by the
+// daemon (lifecycle, Run loop, persistence); the Discoverer just reads
+// top-N candidates via TopActiveRepos.
+//
+// When Enabled is true and the daemon has called SetGHArchiveSource on
+// the Discoverer, DiscoverAll appends a "gharchive" search step that
+// promotes the top-N most active repos in the collector's sliding
+// window into the discovery candidate set. Repos already tracked in
+// state.Store are deduped out before any GitHub REST hydration.
+//
+// `min_stars_gate` is OFF by default per the [ISI-952 sign-off]:
+// gharchive's event volume is intended as the sole signal during
+// initial soak. The flag is wired as an emergency throttle if
+// classifier load spikes mid-soak.
+type GHArchiveSourceConfig struct {
+	// Enabled gates whether Source (5) runs at all. When false the
+	// Discoverer never reads from the collector, even if a collector
+	// has been wired via SetGHArchiveSource.
+	Enabled bool `yaml:"enabled"`
+	// TopN caps the number of candidates promoted per discovery
+	// cycle. Zero falls back to DefaultGHArchiveTopN.
+	TopN int `yaml:"top_n"`
+	// ActivityFloor is the minimum total event count over the
+	// collector's sliding window for a repo to be considered. Zero
+	// falls back to DefaultGHArchiveActivityFloor.
+	ActivityFloor int `yaml:"activity_floor"`
+	// MinStarsGate is an optional star floor applied AFTER REST
+	// hydration. Zero (the default) disables the gate so event
+	// volume is the sole filter; set non-zero only as an emergency
+	// throttle to drop hobby/spam repos when classifier capacity is
+	// saturated.
+	MinStarsGate int `yaml:"min_stars_gate"`
+}
+
+// Soak defaults for gharchive discovery, approved by architect in
+// [ISI-952#comment-134365eb]. These are tuning knobs, not invariants —
+// expect to revisit after Stage C ([ISI-956]) metrics land.
+const (
+	// DefaultGHArchiveTopN is the per-cycle top-N candidate cap.
+	DefaultGHArchiveTopN = 500
+	// DefaultGHArchiveActivityFloor is the minimum window-total
+	// event count for a repo to be considered. Computed against the
+	// collector's full window (default 24h), not the latest hour.
+	DefaultGHArchiveActivityFloor = 10
+)
 
 // OrgsSourceConfig configures Source (3): per-org repository search.
 //
@@ -144,6 +193,14 @@ type Discoverer struct {
 	config     Config
 	throttle   time.Duration
 	onLog      func(level, msg string, args ...interface{})
+
+	// ghArchive is the optional gharchive event-stream collector wired
+	// in by the daemon via SetGHArchiveSource. The Discoverer does NOT
+	// own the collector lifecycle (Run loop, cursor persistence) — it
+	// only reads candidate aggregates via TopActiveRepos. Nil when the
+	// daemon has not enabled the gharchive source; DiscoverFromGHArchive
+	// returns nil in that case.
+	ghArchive *GHArchiveSource
 }
 
 // NewDiscoverer creates a new discoverer.
@@ -162,6 +219,20 @@ func NewDiscoverer(client *github.Client, store *state.Store, config Config) *Di
 // pass 0 to avoid real-time waits.
 func (d *Discoverer) SetSearchThrottle(t time.Duration) {
 	d.throttle = t
+}
+
+// SetGHArchiveSource wires the gharchive event-stream collector into
+// the discovery pipeline. Pass nil to disable. The Discoverer does not
+// take ownership of the collector lifecycle — the daemon must continue
+// to drive its Run loop, cursor persistence, and shutdown.
+//
+// Even when a collector is wired, Sources.GHArchive.Enabled must be
+// true for the gharchive search step to run. This split lets the
+// daemon construct the collector eagerly (so its Run loop builds a
+// warm aggregate) while keeping discovery promotion behind a config
+// flag.
+func (d *Discoverer) SetGHArchiveSource(src *GHArchiveSource) {
+	d.ghArchive = src
 }
 
 // SetLogger sets a logging callback.
@@ -280,7 +351,13 @@ func (d *Discoverer) DiscoverAll(ctx context.Context) ([]*Result, error) {
 		// shared across topic / orgs / language-pivot sources. Skip
 		// the wait before the first call so a one-off run pays no
 		// upfront cost.
-		if i > 0 && d.throttle > 0 {
+		//
+		// gharchive does not consume the Search API quota — it reads
+		// from an in-process aggregate and uses the core REST API for
+		// hydration (5000/h authenticated, separate budget). Skipping
+		// the inter-step throttle for gharchive lets it process top-N
+		// candidates without paying the Search-API tax.
+		if i > 0 && d.throttle > 0 && step.consumesSearchAPI {
 			select {
 			case <-ctx.Done():
 				return results, ctx.Err()
@@ -309,11 +386,17 @@ func (d *Discoverer) DiscoverAll(ctx context.Context) ([]*Result, error) {
 	return results, nil
 }
 
-// searchStep is one Search API call within a DiscoverAll cycle.
+// searchStep is one discovery step within a DiscoverAll cycle.
+//
+// Most steps issue Search API calls and share the 30 req/min quota,
+// but the gharchive step reads from an in-process aggregate and uses
+// the core REST API for hydration (separate quota), so it sets
+// consumesSearchAPI=false to skip the inter-step throttle.
 type searchStep struct {
-	source string // "topic" | "org" | "language"
-	label  string // human-readable identifier shown in logs/results
-	run    func(ctx context.Context) (*Result, error)
+	source            string // "topic" | "org" | "language" | "gharchive"
+	label             string // human-readable identifier shown in logs/results
+	consumesSearchAPI bool   // true for steps that hit /search; throttle applies
+	run               func(ctx context.Context) (*Result, error)
 }
 
 // buildSearchPlan returns the ordered list of Search API calls to make
@@ -326,9 +409,10 @@ func (d *Discoverer) buildSearchPlan() []searchStep {
 	for _, topic := range d.config.Topics {
 		topic := topic
 		plan = append(plan, searchStep{
-			source: "topic",
-			label:  topic,
-			run:    func(ctx context.Context) (*Result, error) { return d.DiscoverTopic(ctx, topic) },
+			source:            "topic",
+			label:             topic,
+			consumesSearchAPI: true,
+			run:               func(ctx context.Context) (*Result, error) { return d.DiscoverTopic(ctx, topic) },
 		})
 	}
 
@@ -336,9 +420,10 @@ func (d *Discoverer) buildSearchPlan() []searchStep {
 		for _, org := range d.config.Sources.Orgs.Names {
 			org := org
 			plan = append(plan, searchStep{
-				source: "org",
-				label:  org,
-				run:    func(ctx context.Context) (*Result, error) { return d.DiscoverOrg(ctx, org) },
+				source:            "org",
+				label:             org,
+				consumesSearchAPI: true,
+				run:               func(ctx context.Context) (*Result, error) { return d.DiscoverOrg(ctx, org) },
 			})
 		}
 	}
@@ -352,14 +437,28 @@ func (d *Discoverer) buildSearchPlan() []searchStep {
 			for _, days := range windows {
 				lang, days := lang, days
 				plan = append(plan, searchStep{
-					source: "language",
-					label:  fmt.Sprintf("%s/pushed-%dd", lang, days),
+					source:            "language",
+					label:             fmt.Sprintf("%s/pushed-%dd", lang, days),
+					consumesSearchAPI: true,
 					run: func(ctx context.Context) (*Result, error) {
 						return d.DiscoverLanguage(ctx, lang, days)
 					},
 				})
 			}
 		}
+	}
+
+	// gharchive runs LAST so the search-driven sources (topic/org/lang)
+	// keep priority in cross-source dedup. A repo discovered via a more
+	// specific signal (matching topic, in a curated org) shouldn't be
+	// re-attributed to gharchive just because it also fired events.
+	if d.config.Sources.GHArchive.Enabled && d.ghArchive != nil {
+		plan = append(plan, searchStep{
+			source:            "gharchive",
+			label:             "gharchive-top-n",
+			consumesSearchAPI: false,
+			run:               d.DiscoverFromGHArchive,
+		})
 	}
 
 	return plan
