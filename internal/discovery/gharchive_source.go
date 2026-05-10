@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,14 @@ const (
 	// is ready when `now >= archiveHour + 1h + GHArchivePublishLag`.
 	GHArchivePublishLag = 30 * time.Minute
 
+	// DefaultGHArchivePoisonFailureThreshold caps how many consecutive
+	// Run() cycles a single archive is allowed to fail before Run skips
+	// past it (advancing the cursor) so the firehose can keep up. Tuned
+	// to 5 in [ISI-960](/ISI/issues/ISI-960): high enough to ride out a
+	// gharchive S3 origin outage, low enough to bound the stall to a
+	// few hours under default heartbeat cadence.
+	DefaultGHArchivePoisonFailureThreshold = 5
+
 	// gharchiveArchiveLayout is the gharchive filename / cursor format.
 	gharchiveArchiveLayout = "2006-01-02-15"
 )
@@ -110,6 +119,12 @@ type GHArchiveConfig struct {
 	// up to GHArchiveMaxBackoff. Zero falls back to
 	// DefaultGHArchiveInitialBackoff.
 	InitialBackoff time.Duration
+
+	// PoisonFailureThreshold caps how many consecutive Run() cycles a
+	// single archive may fail before Run advances the cursor past it.
+	// Zero falls back to DefaultGHArchivePoisonFailureThreshold.
+	// Negative is clamped to 1 (skip after the first failure).
+	PoisonFailureThreshold int
 }
 
 // withDefaults returns a copy of cfg with empty fields populated.
@@ -138,6 +153,12 @@ func (c GHArchiveConfig) withDefaults() GHArchiveConfig {
 	}
 	if c.InitialBackoff <= 0 {
 		c.InitialBackoff = DefaultGHArchiveInitialBackoff
+	}
+	if c.PoisonFailureThreshold == 0 {
+		c.PoisonFailureThreshold = DefaultGHArchivePoisonFailureThreshold
+	}
+	if c.PoisonFailureThreshold < 1 {
+		c.PoisonFailureThreshold = 1
 	}
 	return c
 }
@@ -252,6 +273,13 @@ type GHArchiveSource struct {
 
 	mu      sync.RWMutex
 	buckets map[string]*ringBucket
+
+	// poisonMu guards consecutiveFailures. Held only briefly during Run
+	// — Run is the single writer goroutine for ProcessArchive but the
+	// hooks fire under callers' goroutines, so a dedicated mutex keeps
+	// the failure tracker thread-safe under -race.
+	poisonMu            sync.Mutex
+	consecutiveFailures map[string]int
 }
 
 // NewGHArchiveSource constructs a collector. cursorStore must be
@@ -275,15 +303,16 @@ func NewGHArchiveSource(
 	}
 
 	return &GHArchiveSource{
-		cfg:        cfg,
-		client:     &http.Client{Timeout: cfg.HTTPTimeout},
-		cursor:     cursorStore,
-		rollup:     rollupStore,
-		hooks:      hooks,
-		nowFn:      func() time.Time { return time.Now().UTC() },
-		jitterFn:   func(max time.Duration) time.Duration { return time.Duration(rand.Int63n(int64(max + 1))) }, //nolint:gosec
-		eventTypes: idx,
-		buckets:    make(map[string]*ringBucket),
+		cfg:                 cfg,
+		client:              &http.Client{Timeout: cfg.HTTPTimeout},
+		cursor:              cursorStore,
+		rollup:              rollupStore,
+		hooks:               hooks,
+		nowFn:               func() time.Time { return time.Now().UTC() },
+		jitterFn:            func(max time.Duration) time.Duration { return time.Duration(rand.Int63n(int64(max + 1))) }, //nolint:gosec
+		eventTypes:          idx,
+		buckets:             make(map[string]*ringBucket),
+		consecutiveFailures: make(map[string]int),
 	}
 }
 
@@ -351,15 +380,68 @@ func (s *GHArchiveSource) Run(ctx context.Context) error {
 		if err := s.ProcessArchive(ctx, archive); err != nil {
 			// ProcessArchive logs; continue with the next archive
 			// rather than stalling the whole run on one bad hour.
-			// Note: the cursor is NOT advanced for the failed
-			// archive, so the next Run will retry it.
+			// Cursor advance for the failed archive depends on
+			// the poison-skip path below.
 			logging.Warn("gharchive_source: archive failed; continuing",
 				"archive", archive, "error", err)
+			s.handleArchiveFailure(ctx, archive, err)
 			continue
 		}
+		// Success: clear any prior failure tally for this archive so
+		// transient blips never accumulate toward the poison threshold.
+		s.poisonMu.Lock()
+		delete(s.consecutiveFailures, archive)
+		s.poisonMu.Unlock()
 	}
 
 	return nil
+}
+
+// handleArchiveFailure tracks consecutive Run-cycle failures per archive
+// and skips past a poison archive once the threshold is reached. Without
+// the skip, a permanently undecodable archive (truncated upstream,
+// persistent gzip CRC error, persistent 5xx) would stall the cursor at
+// h-1 forever and the firehose would never catch up to today.
+//
+// Skip semantics: advance the cursor as if the archive succeeded
+// (LastProcessedArchive = archive) and emit OnArchiveError with a
+// distinguishing "poison archive" message + attempt=0 so dashboards can
+// count skips separately from in-fetch errors.
+func (s *GHArchiveSource) handleArchiveFailure(ctx context.Context, archive string, cause error) {
+	s.poisonMu.Lock()
+	s.consecutiveFailures[archive]++
+	failures := s.consecutiveFailures[archive]
+	s.poisonMu.Unlock()
+
+	if failures < s.cfg.PoisonFailureThreshold {
+		return
+	}
+
+	skipErr := fmt.Errorf("poison archive: skipping after %d consecutive failures: %w", failures, cause)
+	logging.Warn("gharchive_source: skipping poison archive",
+		"archive", archive,
+		"consecutive_failures", failures,
+		"threshold", s.cfg.PoisonFailureThreshold,
+		"cause", cause)
+
+	if s.hooks.OnArchiveError != nil {
+		s.hooks.OnArchiveError(archive, 0, skipErr)
+	}
+
+	if err := s.cursor.SetCursor(ctx, GHArchiveCursor{
+		LastProcessedArchive: archive,
+		CompletedAt:          s.nowFn().UTC(),
+	}); err != nil {
+		// Cursor write failed: leave the failure count in place so
+		// the next cycle retries the skip. Do not delete the entry.
+		logging.Warn("gharchive_source: failed to advance cursor past poison archive",
+			"archive", archive, "error", err)
+		return
+	}
+
+	s.poisonMu.Lock()
+	delete(s.consecutiveFailures, archive)
+	s.poisonMu.Unlock()
 }
 
 // nextStartHour returns the first hour Run should attempt to process.
@@ -431,9 +513,16 @@ func (s *GHArchiveSource) ProcessArchive(ctx context.Context, archive string) er
 }
 
 // fetchArchiveWithRetry hits the gharchive origin with bounded
-// exponential backoff for transient failures (network errors, 5xx).
-// 4xx responses (notably 404 for not-yet-published archives) are
-// treated as terminal — there is no benefit to retrying.
+// exponential backoff for transient failures (network errors, 5xx, plus
+// the retry-friendly 4xx status codes 408 and 429). Other 4xx responses
+// (notably 404 for not-yet-published archives, 403 for permission
+// issues) are treated as terminal — there is no benefit to retrying.
+//
+// When the origin sends `Retry-After` on a retryable response, that
+// value overrides the computed exponential-backoff sleep for the next
+// attempt (capped at GHArchiveMaxBackoff). This honors RFC 9110/9111 so
+// we don't hammer a struggling S3 origin that already told us when to
+// come back.
 func (s *GHArchiveSource) fetchArchiveWithRetry(ctx context.Context, archive string) (io.ReadCloser, error) {
 	url := fmt.Sprintf("%s/%s.json.gz", s.cfg.BaseURL, archive)
 
@@ -441,28 +530,47 @@ func (s *GHArchiveSource) fetchArchiveWithRetry(ctx context.Context, archive str
 	backoff := s.cfg.InitialBackoff
 
 	for attempt := 1; attempt <= s.cfg.MaxRetries; attempt++ {
+		// Reset per-attempt retry-after override; only set when the
+		// current response carries a parseable Retry-After header.
+		var retryAfter time.Duration
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("building request for %s: %w", url, err)
 		}
 
 		resp, err := s.client.Do(req)
-		if err != nil {
+		switch {
+		case err != nil:
 			lastErr = err
 			if s.hooks.OnArchiveError != nil {
 				s.hooks.OnArchiveError(archive, attempt, err)
 			}
-		} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		case resp.StatusCode >= 200 && resp.StatusCode < 300:
 			return resp.Body, nil
-		} else if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			// Terminal: not-found / forbidden won't fix on retry.
+		case isRetryableHTTPStatus(resp.StatusCode):
+			// 408 / 429 / 5xx: transient under burst load on the
+			// gharchive S3 origin. Honor Retry-After when present.
+			lastErr = fmt.Errorf("gharchive %s: %s", url, resp.Status)
+			retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), s.nowFn())
+			resp.Body.Close()
+			if s.hooks.OnArchiveError != nil {
+				s.hooks.OnArchiveError(archive, attempt, lastErr)
+			}
+		case resp.StatusCode >= 400 && resp.StatusCode < 500:
+			// Other 4xx is terminal: 404 for not-yet-published
+			// archives and 403 for permission issues won't fix on
+			// retry, so fail fast and let Run decide whether to
+			// skip-past via the poison threshold.
 			lastErr = fmt.Errorf("gharchive %s: %s", url, resp.Status)
 			resp.Body.Close()
 			if s.hooks.OnArchiveError != nil {
 				s.hooks.OnArchiveError(archive, attempt, lastErr)
 			}
 			return nil, lastErr
-		} else {
+		default:
+			// Non-2xx, non-4xx (i.e. 1xx/3xx unexpected here, or
+			// any future >=600 oddity): treat as transient.
 			lastErr = fmt.Errorf("gharchive %s: %s", url, resp.Status)
 			resp.Body.Close()
 			if s.hooks.OnArchiveError != nil {
@@ -475,7 +583,14 @@ func (s *GHArchiveSource) fetchArchiveWithRetry(ctx context.Context, archive str
 		}
 
 		// Exponential backoff with jitter — capped at GHArchiveMaxBackoff.
-		sleep := backoff + s.jitterFn(backoff/2)
+		// Retry-After (when present and positive) overrides the computed
+		// sleep so the origin's hint wins.
+		var sleep time.Duration
+		if retryAfter > 0 {
+			sleep = retryAfter
+		} else {
+			sleep = backoff + s.jitterFn(backoff/2)
+		}
 		if sleep > GHArchiveMaxBackoff {
 			sleep = GHArchiveMaxBackoff
 		}
@@ -494,6 +609,48 @@ func (s *GHArchiveSource) fetchArchiveWithRetry(ctx context.Context, archive str
 		lastErr = errors.New("retries exhausted")
 	}
 	return nil, fmt.Errorf("gharchive fetch %s: %w", url, lastErr)
+}
+
+// isRetryableHTTPStatus returns true for HTTP responses that are worth
+// retrying with backoff: all 5xx plus the retry-friendly 4xx codes 408
+// (Request Timeout) and 429 (Too Many Requests). Both 408 and 429 are
+// retry-friendly per RFC 9110/9111 and are observed from gharchive's S3
+// origin under burst load.
+func isRetryableHTTPStatus(code int) bool {
+	switch code {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return code >= 500 && code < 600
+}
+
+// parseRetryAfter interprets the Retry-After header per RFC 9110 §10.2.3.
+// Returns 0 (caller should fall back to exponential backoff) when the
+// header is empty, malformed, or names a past instant.
+//
+// Two forms are accepted:
+//   - delta-seconds: integer seconds to wait (e.g. "120")
+//   - HTTP-date: RFC 1123 / RFC 850 / asctime instant (e.g.
+//     "Fri, 31 Dec 1999 23:59:59 GMT")
+func parseRetryAfter(header string, now time.Time) time.Duration {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		d := t.Sub(now)
+		if d <= 0 {
+			return 0
+		}
+		return d
+	}
+	return 0
 }
 
 // gharchiveEvent is the minimal envelope we need from each archive line.
