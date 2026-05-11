@@ -12,10 +12,25 @@ import (
 )
 
 // MaxGraphQLBatchSize is the maximum number of repos queried in a single
-// GraphQL request. GitHub's GraphQL API has a soft node limit of 500,000
-// per query; with ~6-8 nodes per repo fragment this bounds us at ~50-80.
-// We pick 50 to stay well within the limit and match the plan spec.
-const MaxGraphQLBatchSize = 50
+// GraphQL request. GitHub enforces a per-query resource budget that is
+// independent of the rate-limit point bucket; once it trips, the server
+// returns HTTP 200 with partial `data` and per-alias
+// `RESOURCE_LIMITS_EXCEEDED` errors for the abandoned tail.
+//
+// After T5b (ISI-765) folded `recentMergedPRs(first: 100)`,
+// `recentIssues(first: 100)`, `mentionableUsers`, and `latestReleases`
+// into the fragment, the per-repo cost roughly tripled. Live probes
+// against api.github.com on 2026-05-11 (ISI-983) found:
+//
+//   - batch 50 → 4 / 50 succeed, 46 RESOURCE_LIMITS_EXCEEDED
+//   - batch 30 → HTTP 502 (proxy timeout)
+//   - batch 25 → 25 / 25 succeed, 0 errors
+//   - batch 20 → 20 / 20 succeed, 0 errors
+//
+// 25 sits well under the cliff with headroom for heavy-velocity repos
+// (kubernetes, hashicorp/*). If the fragment grows again, re-run the
+// probe before raising this constant.
+const MaxGraphQLBatchSize = 25
 
 // graphqlEndpoint is the path relative to the configured base URL.
 const graphqlEndpoint = "/graphql"
@@ -201,9 +216,33 @@ func (c *Client) bulkFetchBatch(ctx context.Context, batch []Repo, out *BulkFetc
 		return fmt.Errorf("graphql errors: %s", formatGraphQLErrors(envelope.Errors))
 	}
 
+	// ISI-983: GitHub aborts the per-query resource budget mid-document by
+	// returning HTTP 200 with the consumed-up-to-that-point aliases
+	// populated, the remainder set to `null`, and one or more
+	// `RESOURCE_LIMITS_EXCEEDED` errors keyed by alias path. The null
+	// aliases were never evaluated — they are NOT missing repos. Routing
+	// them through NotFound logs "Repo not found via graphql" on healthy
+	// public repos and poisons drain/exclude downstream.
+	resourceLimitedAliases := make(map[string]struct{})
+	for _, e := range envelope.Errors {
+		if e.Type != "RESOURCE_LIMITS_EXCEEDED" {
+			continue
+		}
+		if len(e.Path) > 0 {
+			resourceLimitedAliases[e.Path[0]] = struct{}{}
+		}
+	}
+
 	for alias, repo := range aliasToRepo {
 		raw, ok := envelope.Data[alias]
 		if !ok || bytes.Equal(raw, []byte("null")) {
+			if _, limited := resourceLimitedAliases[alias]; limited {
+				// Surface via batch-level error so the outer loop
+				// records this in FailedBatches; do not pollute
+				// NotFound, which is reserved for genuinely
+				// missing repos.
+				continue
+			}
 			out.NotFound = append(out.NotFound, fmt.Sprintf("%s/%s", repo.Owner, repo.Name))
 			continue
 		}
@@ -240,6 +279,15 @@ func (c *Client) bulkFetchBatch(ctx context.Context, batch []Repo, out *BulkFetc
 		metrics.ActivityTruncated = truncated
 
 		out.Metrics[fullName] = metrics
+	}
+
+	// Surface RESOURCE_LIMITS_EXCEEDED at the batch level so the outer
+	// loop records this in FailedBatches and the operator sees the real
+	// failure mode (batch too heavy for the fragment) instead of a healthy
+	// stream of phantom NotFound entries.
+	if len(resourceLimitedAliases) > 0 {
+		return fmt.Errorf("graphql RESOURCE_LIMITS_EXCEEDED on %d/%d aliases — batch too heavy for fragment (ISI-983)",
+			len(resourceLimitedAliases), len(batch))
 	}
 
 	return nil
