@@ -486,6 +486,53 @@ func TestBulkFetchMetadata_ResourceLimitsExceeded(t *testing.T) {
 	}
 }
 
+// TestBulkFetchMetadata_ResourceLimitsExceeded_NoPath is the defensive-sentinel
+// regression for ISI-983 review-L1: GitHub today always emits
+// `RESOURCE_LIMITS_EXCEEDED` errors keyed by `path[0]=alias`, but if it ever
+// emits one without a `path`, the alias map stays empty. The batch must still
+// surface as a FailedBatches entry instead of silently returning partial data
+// with no failure signal. We exercise the path that pairs `data: {}` with a
+// pathless RLE — the batch is empty, no aliases mapped, but the sentinel
+// must still fire the batch-level error.
+func TestBulkFetchMetadata_ResourceLimitsExceeded_NoPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"data": {"r0": null},
+			"errors": [
+				{"type": "RESOURCE_LIMITS_EXCEEDED", "message": "Resource limits for this query exceeded."}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient("tkn")
+	client.SetBaseURL(server.URL)
+
+	out, err := client.BulkFetchMetadata(context.Background(), []Repo{{Owner: "o", Name: "r0"}})
+	if err != nil {
+		t.Fatalf("BulkFetchMetadata: %v", err)
+	}
+
+	// Pathless RLE must NOT be misrouted as NotFound on the null alias --
+	// it's still a resource-exhaustion signal, not a missing repo.
+	if len(out.NotFound) != 0 {
+		t.Errorf("NotFound = %v, want empty (pathless RLE must not poison NotFound)", out.NotFound)
+	}
+	if len(out.FailedBatches) != 1 {
+		t.Fatalf("FailedBatches = %d, want 1 (sentinel must surface batch failure)", len(out.FailedBatches))
+	}
+	if !strings.Contains(out.FailedBatches[0].Err.Error(), "RESOURCE_LIMITS_EXCEEDED") {
+		t.Errorf("FailedBatches[0].Err = %v, want RESOURCE_LIMITS_EXCEEDED", out.FailedBatches[0].Err)
+	}
+	// Greppability guard: error message uses ASCII `--`, not U+2014 em-dash,
+	// so log-shippers/DQL contains-matchers see the same byte sequence we
+	// document in runbooks.
+	if strings.ContainsRune(out.FailedBatches[0].Err.Error(), '—') {
+		t.Errorf("FailedBatches[0].Err contains U+2014 em-dash, want ASCII `--`: %v", out.FailedBatches[0].Err)
+	}
+}
+
 // TestMaxGraphQLBatchSize_Bounded guards against silently raising the batch
 // size back into the resource-exhaustion zone surfaced by ISI-983.
 // Live-traffic probe (2026-05-11) against the post-ISI-765 fragment showed

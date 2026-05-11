@@ -220,14 +220,21 @@ func (c *Client) bulkFetchBatch(ctx context.Context, batch []Repo, out *BulkFetc
 	// returning HTTP 200 with the consumed-up-to-that-point aliases
 	// populated, the remainder set to `null`, and one or more
 	// `RESOURCE_LIMITS_EXCEEDED` errors keyed by alias path. The null
-	// aliases were never evaluated — they are NOT missing repos. Routing
+	// aliases were never evaluated -- they are NOT missing repos. Routing
 	// them through NotFound logs "Repo not found via graphql" on healthy
 	// public repos and poisons drain/exclude downstream.
+	//
+	// `hadResourceLimit` is the defensive sentinel: if GitHub ever emits an
+	// RLE without a `path` (so we cannot map it to a specific alias), we
+	// must still surface the batch as failed instead of silently returning
+	// partial data with no FailedBatches signal.
 	resourceLimitedAliases := make(map[string]struct{})
+	hadResourceLimit := false
 	for _, e := range envelope.Errors {
 		if e.Type != "RESOURCE_LIMITS_EXCEEDED" {
 			continue
 		}
+		hadResourceLimit = true
 		if len(e.Path) > 0 {
 			resourceLimitedAliases[e.Path[0]] = struct{}{}
 		}
@@ -236,7 +243,14 @@ func (c *Client) bulkFetchBatch(ctx context.Context, batch []Repo, out *BulkFetc
 	for alias, repo := range aliasToRepo {
 		raw, ok := envelope.Data[alias]
 		if !ok || bytes.Equal(raw, []byte("null")) {
-			if _, limited := resourceLimitedAliases[alias]; limited {
+			_, limited := resourceLimitedAliases[alias]
+			// Defensive: if any RLE was observed but path-map is empty
+			// (pathless RLE — never seen in production but possible),
+			// we cannot prove a given null alias is genuinely missing
+			// vs. resource-skipped. Conservatively skip NotFound for
+			// all nulls in such a batch; the batch-level error fires
+			// below and the caller retries on the next refresh tick.
+			if limited || (hadResourceLimit && len(resourceLimitedAliases) == 0) {
 				// Surface via batch-level error so the outer loop
 				// records this in FailedBatches; do not pollute
 				// NotFound, which is reserved for genuinely
@@ -284,9 +298,11 @@ func (c *Client) bulkFetchBatch(ctx context.Context, batch []Repo, out *BulkFetc
 	// Surface RESOURCE_LIMITS_EXCEEDED at the batch level so the outer
 	// loop records this in FailedBatches and the operator sees the real
 	// failure mode (batch too heavy for the fragment) instead of a healthy
-	// stream of phantom NotFound entries.
-	if len(resourceLimitedAliases) > 0 {
-		return fmt.Errorf("graphql RESOURCE_LIMITS_EXCEEDED on %d/%d aliases — batch too heavy for fragment (ISI-983)",
+	// stream of phantom NotFound entries. ASCII `--` (not U+2014) keeps the
+	// error string greppable by log-shippers and Dynatrace DQL `contains`
+	// matchers that don't normalize Unicode dashes.
+	if hadResourceLimit {
+		return fmt.Errorf("graphql RESOURCE_LIMITS_EXCEEDED on %d/%d aliases -- batch too heavy for fragment (ISI-983)",
 			len(resourceLimitedAliases), len(batch))
 	}
 
