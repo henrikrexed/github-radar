@@ -36,28 +36,28 @@ discovery:
     orgs:
       enabled: true
       # min_stars: 100  # optional override; 0 inherits discovery.min_stars
-      names: []
-      #   - kubernetes
-      #   - hashicorp
-      #   - opentelemetry
-      #   - cncf
-      #   - prometheus
-      #   - grafana
-      #   - elastic
-      #   - influxdata
+      names:
+        - kubernetes
+        - hashicorp
+        - opentelemetry
+        - cncf
+        - prometheus
+        - grafana
+        - elastic
+        - influxdata
     # Source (4) — language-pivot search. Catches popular projects
     # actively maintained but not strongly tagged by topic.
     # Enable at Stage A. push_windows_days controls freshness windows.
     languages:
       enabled: true
       # min_stars: 500  # optional override; 0 inherits discovery.min_stars
-      names: []
-      #   - Rust
-      #   - Go
-      #   - Python
-      #   - TypeScript
-      #   - Zig
-      #   - Swift
+      names:
+        - Rust
+        - Go
+        - Python
+        - TypeScript
+        - Zig
+        - Swift
       push_windows_days: [7, 30, 90]
   topics:
     # Core cloud-native
