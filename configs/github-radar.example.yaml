@@ -59,6 +59,30 @@ discovery:
       #   - Zig
       #   - Swift
       push_windows_days: [7, 30, 90]
+    # Source (5) — gharchive event-stream discovery. Path C of ISI-950:
+    # consume gharchive.org hourly archives as the discovery firehose,
+    # then continue using the live GitHub API for classification of the
+    # selected candidates. Lifts the ~1k tracked-repo plateau caused by
+    # the GitHub Search API 1000-result-per-query cap.
+    #
+    # NOT the same as collector.gharchive (ISI-815 metrics fallback).
+    # Same archive origin, different code path and purpose:
+    #   - discovery.sources.gharchive (this) — firehose feeds discovery
+    #   - collector.gharchive          — per-repo metric backup
+    # See docs/configuration.md "Discovery sources — gharchive".
+    gharchive:
+      enabled: false                                                          # default: false — gate Stage C rollout via config alone
+      window_hours: 24                                                        # sliding window over which event volume is aggregated (>=1)
+      top_n_per_hour: 500                                                     # per-hour candidate cap surfaced to classifier (>=1)
+      activity_floor: 10                                                      # min total events/repo over window to be a candidate (>=0)
+      event_types:                                                            # GitHub event types kept by the type filter
+        - WatchEvent
+        - ForkEvent
+        - PushEvent
+        - PullRequestEvent
+      min_stars_gate: 0                                                       # optional star floor for gharchive candidates; 0 disables (let event volume be sole signal)
+      daily_cap_warn: 4000                                                    # yellow signal — Dynatrace dashboard warn threshold (does NOT pause emission)
+      daily_cap_hard: 5000                                                    # circuit-breaker — pauses emission for the rest of the UTC day when reached
   topics:
     # Core cloud-native
     - kubernetes

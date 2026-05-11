@@ -67,6 +67,53 @@ func (c *Config) Validate() error {
 		issues = append(issues, fmt.Sprintf("discovery.auto_track_threshold: must be >= 0, got %.1f", c.Discovery.AutoTrackThreshold))
 	}
 
+	// discovery.sources.gharchive (Path C — ISI-950).
+	// Validation rules:
+	//   - Zero on a positive-int field means "unset; runtime fills from
+	//     DefaultConfig()". So zero is always accepted here.
+	//   - Negative values are always errors (real misconfig).
+	//   - When the source is Enabled, zero on a required positive int
+	//     becomes a hard error so a flag flip never lights up an
+	//     unconfigured source.
+	//   - Cross-field invariant (warn < hard) is only checked when both
+	//     are explicitly set so partially specified blocks still pass.
+	ga := c.Discovery.Sources.GHArchive
+	if ga.WindowHours < 0 {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.window_hours: must be >= 0 (0 = use default 24), got %d", ga.WindowHours))
+	}
+	if ga.TopNPerHour < 0 {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.top_n_per_hour: must be >= 0 (0 = use default 500), got %d", ga.TopNPerHour))
+	}
+	if ga.ActivityFloor < 0 {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.activity_floor: must be >= 0, got %d", ga.ActivityFloor))
+	}
+	if ga.MinStarsGate < 0 {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.min_stars_gate: must be >= 0, got %d", ga.MinStarsGate))
+	}
+	if ga.DailyCapWarn < 0 {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.daily_cap_warn: must be >= 0 (0 = use default 4000), got %d", ga.DailyCapWarn))
+	}
+	if ga.DailyCapHard < 0 {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.daily_cap_hard: must be >= 0 (0 = use default 5000), got %d", ga.DailyCapHard))
+	}
+	if ga.Enabled {
+		if ga.WindowHours == 0 {
+			issues = append(issues, "discovery.sources.gharchive.window_hours: required when source is enabled (suggested: 24)")
+		}
+		if ga.TopNPerHour == 0 {
+			issues = append(issues, "discovery.sources.gharchive.top_n_per_hour: required when source is enabled (suggested: 500)")
+		}
+		if ga.DailyCapWarn == 0 {
+			issues = append(issues, "discovery.sources.gharchive.daily_cap_warn: required when source is enabled (suggested: 4000)")
+		}
+		if ga.DailyCapHard == 0 {
+			issues = append(issues, "discovery.sources.gharchive.daily_cap_hard: required when source is enabled (suggested: 5000)")
+		}
+	}
+	if ga.DailyCapWarn > 0 && ga.DailyCapHard > 0 && ga.DailyCapWarn >= ga.DailyCapHard {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive: daily_cap_warn (%d) must be less than daily_cap_hard (%d)", ga.DailyCapWarn, ga.DailyCapHard))
+	}
+
 	// Classification settings
 	if c.Classification.OllamaEndpoint != "" {
 		parsedURL, err := url.Parse(c.Classification.OllamaEndpoint)

@@ -42,6 +42,20 @@ discovery:
   min_stars: 100                   # Minimum star count to include (default: 100)
   max_age_days: 90                 # Max repo age in days, 0 = no limit (default: 90)
   auto_track_threshold: 50.0       # Auto-track repos scoring above this (default: 50.0)
+  sources:
+    gharchive:                     # Path C — gharchive event-stream firehose (ISI-950)
+      enabled: false               # default: false; staged Stage C rollout via config alone
+      window_hours: 24             # sliding window for event aggregation
+      top_n_per_hour: 500          # per-hour candidate cap
+      activity_floor: 10           # minimum events/repo over window
+      event_types:                 # GitHub event types kept by the type filter
+        - WatchEvent
+        - ForkEvent
+        - PushEvent
+        - PullRequestEvent
+      min_stars_gate: 0            # 0 disables; lets event volume be sole signal
+      daily_cap_warn: 4000         # dashboard warn threshold (no pause)
+      daily_cap_hard: 5000         # circuit-breaker pauses emission for the day
 
 # Growth scoring formula weights
 scoring:
@@ -290,3 +304,64 @@ gharchive.org provides event-based data (star events, fork events, PR events, is
 - `contributor_growth`, `pr_velocity`, `issue_velocity`, `merged_prs_7d`
 
 Absolute counts (total stars, total forks, contributor count) are not available from gharchive — only event-level deltas. The live API remains the source of truth for those metrics.
+
+## Discovery sources — gharchive
+
+**Status (ISI-967):** flags + daemon wiring complete. Setting `discovery.sources.gharchive.enabled: true` now constructs a `*discovery.GHArchiveSource` at daemon startup and registers it with the discoverer, so the Path C firehose is live end-to-end. Earlier intermediate states (Story 1+2 only, Story 3 config flags only) shipped the surface dark.
+
+The `discovery.sources.gharchive` block configures the gharchive **event-stream discovery firehose** introduced for ISI-950 (Path C). It uses gharchive.org as the discovery feeder so GitHub Radar can break out of the ~1k tracked-repo plateau imposed by the GitHub Search API's 1000-result-per-query cap. The live GitHub API is still used for **classification** of selected candidates — gharchive is discovery only.
+
+> **Migration note — two gharchive paths, do not confuse them.**
+>
+> | Config key                       | Purpose                                                    | Code path                                  | Issue    |
+> |----------------------------------|------------------------------------------------------------|--------------------------------------------|----------|
+> | `discovery.sources.gharchive.*`  | Discovery firehose: surface new repos by event volume      | `internal/discovery/gharchive_source.go`   | ISI-950  |
+> | `collector.gharchive.*`          | Per-repo metric backup when live API budget runs low       | `internal/metrics/gharchive.go`            | ISI-815  |
+>
+> Both paths read from the same gharchive.org hourly archives, but they answer different questions and run independently. Existing `collector.gharchive.*` users do not need to do anything — that block is unchanged. Path C ships dark via `discovery.sources.gharchive.enabled = false` and lights up Stage C through config alone.
+
+### Configuration Keys
+
+```yaml
+discovery:
+  sources:
+    gharchive:
+      enabled: false
+      window_hours: 24
+      top_n_per_hour: 500
+      activity_floor: 10
+      event_types: [WatchEvent, ForkEvent, PushEvent, PullRequestEvent]
+      min_stars_gate: 0
+      daily_cap_warn: 4000
+      daily_cap_hard: 5000
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `discovery.sources.gharchive.enabled` | bool | `false` | Master gate for the firehose. Default off so the source ships dark; flip via config alone for staged Stage C rollout. |
+| `discovery.sources.gharchive.window_hours` | int | `24` | Sliding-window length the collector aggregates per-repo event volume across. Matches the ISI-950 Stage C acceptance window. |
+| `discovery.sources.gharchive.top_n_per_hour` | int | `500` | Per-hour candidate cap surfaced to the classifier. Tunes how aggressively gharchive feeds the downstream pipeline. |
+| `discovery.sources.gharchive.activity_floor` | int | `10` | Minimum total events per repo across the window for that repo to be eligible as a candidate. `0` disables the floor — every tracked repo competes for top-N. |
+| `discovery.sources.gharchive.event_types` | []string | `[WatchEvent, ForkEvent, PushEvent, PullRequestEvent]` | GitHub event types kept by the type filter. Empty list falls back to the canonical four. |
+| `discovery.sources.gharchive.min_stars_gate` | int | `0` (disabled) | Optional star floor for gharchive-discovered candidates. Default disabled — let event volume be the sole signal initially per the ISI-950 Q3 decision. |
+| `discovery.sources.gharchive.daily_cap_warn` | int | `4000` | Yellow-signal threshold on candidates emitted per UTC day. The Dynatrace dashboard surfaces a warn state here; emission is **not** paused. |
+| `discovery.sources.gharchive.daily_cap_hard` | int | `5000` | Circuit-breaker threshold on candidates emitted per UTC day. When reached, the source pauses emission for the rest of the day to protect classifier capacity. Must be greater than `daily_cap_warn`. |
+
+### Validation
+
+`Validate()` enforces these rules on the gharchive discovery block:
+
+- All numeric knobs must be `>= 0`. Negative values fail validation.
+- When `enabled: true`, `window_hours`, `top_n_per_hour`, `daily_cap_warn`, and `daily_cap_hard` must be set to positive values — flipping the flag with zeros surfaces an explicit issue per missing knob.
+- `daily_cap_warn` must be strictly less than `daily_cap_hard` whenever both are non-zero. Identical or inverted thresholds fail validation.
+- Zero on a positive-int field means "unset; runtime fills from `DefaultConfig()`". This keeps minimal `enabled: false` blocks ergonomic.
+
+Run validation against your config before deploying:
+
+```bash
+github-radar config validate --config config.yaml
+```
+
+### Rollback
+
+`enabled: false` is the kill switch. Set it back to `false` in config, restart the daemon, and the firehose stops surfacing new candidates. The cursor (in `metadata.gharchive_discovery_cursor`) is preserved across the toggle so re-enabling resumes from the last archive without reprocessing the back-window.

@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hrexed/github-radar/internal/config"
+	"github.com/hrexed/github-radar/internal/database"
 )
 
 func TestDefaultDaemonConfig(t *testing.T) {
@@ -224,6 +227,123 @@ func TestHealthEndpoint_Stopping(t *testing.T) {
 
 	if resp["healthy"] {
 		t.Error("expected healthy=false when stopping")
+	}
+}
+
+// withTempDBPath redirects database.DefaultDBPath at a fresh
+// per-test temp directory so daemon.New does not litter the operator's
+// XDG_DATA_HOME / ~/.local/share path. Restored at test cleanup.
+func withTempDBPath(t *testing.T) {
+	t.Helper()
+	old := database.DefaultDBPath
+	database.DefaultDBPath = filepath.Join(t.TempDir(), "scanner.db")
+	t.Cleanup(func() { database.DefaultDBPath = old })
+}
+
+// gharchiveDaemonConfig builds a config.Config + DaemonConfig pair
+// suitable for the integration tests below: discovery is enabled with
+// a single placeholder topic so the daemon constructs a Discoverer,
+// dry-run is on, and the rate-limit floor is non-zero.
+func gharchiveDaemonConfig(gharchiveEnabled bool) (*config.Config, DaemonConfig) {
+	cfg := &config.Config{
+		GitHub: config.GithubConfig{
+			Token:     "test-token",
+			RateLimit: 4000,
+		},
+		Otel: config.OtelConfig{
+			Endpoint:    "",
+			ServiceName: "test",
+		},
+		Discovery: config.DiscoveryConfig{
+			Enabled: true,
+			Topics:  []string{"placeholder"},
+			Sources: config.DiscoverySourcesConfig{
+				GHArchive: config.DiscoveryGHArchiveConfig{
+					Enabled:       gharchiveEnabled,
+					WindowHours:   24,
+					TopNPerHour:   500,
+					ActivityFloor: 10,
+					EventTypes:    []string{"WatchEvent"},
+				},
+			},
+		},
+	}
+	return cfg, DaemonConfig{
+		Interval: time.Hour,
+		HTTPAddr: ":0",
+		DryRun:   true,
+	}
+}
+
+// TestDaemonNew_GHArchiveDiscovery_EnabledWiresSource — happy path of
+// [ISI-967]: with discovery.sources.gharchive.enabled=true the daemon
+// constructs a *discovery.GHArchiveSource and registers it on the
+// Discoverer. We probe via the public DiscoverFromGHArchive contract:
+// when the source is wired the function returns a non-nil *Result
+// (TotalFound=0 because the in-memory collector has not processed any
+// archives yet, so no live REST hydration is triggered).
+func TestDaemonNew_GHArchiveDiscovery_EnabledWiresSource(t *testing.T) {
+	withTempDBPath(t)
+	cfg, dCfg := gharchiveDaemonConfig(true)
+
+	d, err := New(cfg, dCfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		if d.db != nil {
+			_ = d.db.Close()
+		}
+	})
+
+	if d.discoverer == nil {
+		t.Fatal("d.discoverer = nil, want non-nil (Discovery.Enabled=true with one topic should construct a Discoverer)")
+	}
+
+	res, err := d.discoverer.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive err = %v, want nil", err)
+	}
+	if res == nil {
+		t.Fatal("DiscoverFromGHArchive result = nil, want non-nil — gharchive source was not wired into the Discoverer")
+	}
+	if res.Topic != "gharchive" {
+		t.Errorf("result.Topic = %q, want %q", res.Topic, "gharchive")
+	}
+	if res.TotalFound != 0 {
+		t.Errorf("result.TotalFound = %d, want 0 (collector empty, no archives processed yet)", res.TotalFound)
+	}
+}
+
+// TestDaemonNew_GHArchiveDiscovery_DisabledKeepsSourceUnwired —
+// negative path of [ISI-967]: with the user-facing flag at its default
+// false, the daemon must NOT call SetGHArchiveSource, preserving the
+// pre-Path-C behaviour where DiscoverFromGHArchive returns
+// (nil, nil).
+func TestDaemonNew_GHArchiveDiscovery_DisabledKeepsSourceUnwired(t *testing.T) {
+	withTempDBPath(t)
+	cfg, dCfg := gharchiveDaemonConfig(false)
+
+	d, err := New(cfg, dCfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		if d.db != nil {
+			_ = d.db.Close()
+		}
+	})
+
+	if d.discoverer == nil {
+		t.Fatal("d.discoverer = nil, want non-nil (Discovery.Enabled=true with one topic should construct a Discoverer)")
+	}
+
+	res, err := d.discoverer.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive err = %v, want nil", err)
+	}
+	if res != nil {
+		t.Errorf("result = %+v, want nil — gharchive source must stay unwired when discovery.sources.gharchive.enabled=false", res)
 	}
 }
 
