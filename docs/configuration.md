@@ -347,6 +347,8 @@ discovery:
 | `discovery.sources.gharchive.daily_cap_warn` | int | `4000` | Yellow-signal threshold on candidates emitted per UTC day. The Dynatrace dashboard surfaces a warn state here; emission is **not** paused. |
 | `discovery.sources.gharchive.daily_cap_hard` | int | `5000` | Circuit-breaker threshold on candidates emitted per UTC day. When reached, the source pauses emission for the rest of the day to protect classifier capacity. Must be greater than `daily_cap_warn`. |
 
+> **Note:** Cap enforcement (warn signal + hard circuit-breaker pause) ships in Story 4 ([ISI-954](https://github.com/henrikrexed/github-radar/issues)); until that lands, `daily_cap_warn` and `daily_cap_hard` are inert — the values are validated and surfaced to dashboards but no pause or warn action is wired up against them.
+
 ### Validation
 
 `Validate()` enforces these rules on the gharchive discovery block:

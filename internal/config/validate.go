@@ -97,6 +97,7 @@ func (c *Config) Validate() error {
 		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.daily_cap_hard: must be >= 0 (0 = use default 5000), got %d", ga.DailyCapHard))
 	}
 	if ga.Enabled {
+		// MinStarsGate intentionally omitted from the required-when-enabled set: the ISI-950 Q3 decision keeps the star floor opt-in (0 = disabled by default) so event volume alone drives gharchive discovery.
 		if ga.WindowHours == 0 {
 			issues = append(issues, "discovery.sources.gharchive.window_hours: required when source is enabled (suggested: 24)")
 		}
