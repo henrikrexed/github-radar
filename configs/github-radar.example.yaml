@@ -34,7 +34,7 @@ discovery:
     # under high-signal orgs that may not carry our topic labels.
     # Enable at Stage A. Reference org list comes from ISI-578 plan rev 5.
     orgs:
-      enabled: false
+      enabled: true
       # min_stars: 100  # optional override; 0 inherits discovery.min_stars
       names: []
       #   - kubernetes
@@ -49,7 +49,7 @@ discovery:
     # actively maintained but not strongly tagged by topic.
     # Enable at Stage A. push_windows_days controls freshness windows.
     languages:
-      enabled: false
+      enabled: true
       # min_stars: 500  # optional override; 0 inherits discovery.min_stars
       names: []
       #   - Rust
