@@ -342,8 +342,15 @@ func TestDaemonNew_GHArchiveDiscovery_DisabledKeepsSourceUnwired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiscoverFromGHArchive err = %v, want nil", err)
 	}
-	if res != nil {
-		t.Errorf("result = %+v, want nil — gharchive source must stay unwired when discovery.sources.gharchive.enabled=false", res)
+	// M1 ([ISI-965]): disabled gharchive returns a non-nil empty Result
+	// (Topic="gharchive", zero counters, empty Repos) rather than nil,
+	// so callers can iterate without a nil guard. Verify the source is
+	// still effectively unwired by checking the empty-result invariant.
+	if res == nil {
+		t.Fatal("result = nil, want non-nil empty Result (M1)")
+	}
+	if res.TotalFound != 0 || res.NewRepos != 0 || len(res.Repos) != 0 {
+		t.Errorf("result = %+v, want empty Result — gharchive source must stay unwired when discovery.sources.gharchive.enabled=false", res)
 	}
 }
 

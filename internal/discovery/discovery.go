@@ -60,8 +60,10 @@ type SourcesConfig struct {
 //
 // `min_stars_gate` is OFF by default per the [ISI-952 sign-off]:
 // gharchive's event volume is intended as the sole signal during
-// initial soak. The flag is wired as an emergency throttle if
-// classifier load spikes mid-soak.
+// initial soak. When set, it filters the post-hydration result set
+// only — it does NOT shed REST load (see M4 in [ISI-965]); a true
+// pre-hydration prefilter would require caching stars in state.Store
+// from prior cycles and is tracked as a follow-up.
 type GHArchiveSourceConfig struct {
 	// Enabled gates whether Source (5) runs at all. When false the
 	// Discoverer never reads from the collector, even if a collector
@@ -76,9 +78,9 @@ type GHArchiveSourceConfig struct {
 	ActivityFloor int `yaml:"activity_floor"`
 	// MinStarsGate is an optional star floor applied AFTER REST
 	// hydration. Zero (the default) disables the gate so event
-	// volume is the sole filter; set non-zero only as an emergency
-	// throttle to drop hobby/spam repos when classifier capacity is
-	// saturated.
+	// volume is the sole filter. When set, hydrated repos with
+	// fewer stars are dropped from the result set; this does not
+	// reduce REST hydration cost — see M4 in [ISI-965].
 	MinStarsGate int `yaml:"min_stars_gate"`
 }
 
@@ -170,7 +172,18 @@ type Result struct {
 	AutoTracked    int
 	AlreadyTracked int
 	Excluded       int
-	Repos          []DiscoveredRepo
+	// AlreadyTrackedSkipped counts candidates dropped before REST
+	// hydration because state.Store already tracks them. Mirrors
+	// AlreadyTracked for the gharchive source so dedup-parity dashboards
+	// can separate "saw in this cycle" from "skipped early to protect
+	// the REST budget" (see [ISI-953#comment-e28b713a]).
+	AlreadyTrackedSkipped int
+	// Malformed counts candidates dropped because the input
+	// "owner/name" string failed splitRepoName. Surfaced as a counter
+	// (rather than just a log line) so observability can alarm on a
+	// sustained gharchive feed regression.
+	Malformed int
+	Repos     []DiscoveredRepo
 }
 
 // DefaultSearchAPIThrottle is the minimum delay between successive
@@ -337,8 +350,9 @@ func (d *Discoverer) DiscoverAll(ctx context.Context) ([]*Result, error) {
 	}
 
 	var (
-		results []*Result
-		seen    = map[string]struct{}{}
+		results           []*Result
+		seen              = map[string]struct{}{}
+		lastSearchAPIStep = -1 // index of the most recent step that consumed the Search API quota
 	)
 	for i, step := range plan {
 		select {
@@ -349,20 +363,29 @@ func (d *Discoverer) DiscoverAll(ctx context.Context) ([]*Result, error) {
 
 		// Throttle to stay under the 30 req/min Search API quota,
 		// shared across topic / orgs / language-pivot sources. Skip
-		// the wait before the first call so a one-off run pays no
-		// upfront cost.
+		// the wait before the FIRST Search-API call (lastSearchAPIStep
+		// still -1) so a one-off run — or a plan that starts with a
+		// non-Search step — pays no upfront cost.
 		//
-		// gharchive does not consume the Search API quota — it reads
+		// gharchive does not consume the Search API quota: it reads
 		// from an in-process aggregate and uses the core REST API for
 		// hydration (5000/h authenticated, separate budget). Skipping
 		// the inter-step throttle for gharchive lets it process top-N
 		// candidates without paying the Search-API tax.
-		if i > 0 && d.throttle > 0 && step.consumesSearchAPI {
+		//
+		// We gate on lastSearchAPIStep (not i > 0) so any future non-
+		// Search step interleaved in the plan — gharchive, or future
+		// aggregate-backed sources — does not implicitly absorb a
+		// throttle slot the budget didn't actually consume.
+		if step.consumesSearchAPI && lastSearchAPIStep >= 0 && d.throttle > 0 {
 			select {
 			case <-ctx.Done():
 				return results, ctx.Err()
 			case <-time.After(d.throttle):
 			}
+		}
+		if step.consumesSearchAPI {
+			lastSearchAPIStep = i
 		}
 
 		result, err := step.run(ctx)

@@ -6,6 +6,26 @@ import (
 	"strings"
 )
 
+// GHArchiveMaxWindowHours is the upper bound on
+// discovery.sources.gharchive.window_hours. Anything beyond one week
+// is backfill (out of scope for Path C, ISI-950) and would balloon the
+// per-repo ring buffer in the in-memory collector. Architect-locked at
+// 168 in [ISI-965].
+const GHArchiveMaxWindowHours = 168
+
+// AllowedGHArchiveEventTypes is the closed set of GitHub event types
+// the gharchive collector knows how to aggregate. Limited to the
+// canonical Path C signal set ([ISI-950]) plus any future additions
+// reviewed by the architect — Validate rejects unknown values when the
+// source is Enabled so an operator can't silently feed events the
+// collector won't classify.
+var AllowedGHArchiveEventTypes = map[string]struct{}{
+	"WatchEvent":       {},
+	"ForkEvent":        {},
+	"PushEvent":        {},
+	"PullRequestEvent": {},
+}
+
 // ValidationError contains a list of configuration validation issues.
 type ValidationError struct {
 	Issues []string
@@ -81,6 +101,16 @@ func (c *Config) Validate() error {
 	if ga.WindowHours < 0 {
 		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.window_hours: must be >= 0 (0 = use default 24), got %d", ga.WindowHours))
 	}
+	// L2 ([ISI-965]): cap WindowHours at 168 (one week). Beyond that
+	// the collector is doing backfill rather than steady-state
+	// discovery, which is out of scope for Path C — the in-memory
+	// ring would also balloon to 168 × tracked-repos counters.
+	// Architect ruling: keep it a hard rejection so an operator must
+	// consciously file a backfill ticket instead of typing a large
+	// number into the config.
+	if ga.WindowHours > GHArchiveMaxWindowHours {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.window_hours: must be <= %d (one week — beyond is backfill, out of scope), got %d", GHArchiveMaxWindowHours, ga.WindowHours))
+	}
 	if ga.TopNPerHour < 0 {
 		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.top_n_per_hour: must be >= 0 (0 = use default 500), got %d", ga.TopNPerHour))
 	}
@@ -108,6 +138,17 @@ func (c *Config) Validate() error {
 		}
 		if ga.DailyCapHard == 0 {
 			issues = append(issues, "discovery.sources.gharchive.daily_cap_hard: required when source is enabled (suggested: 5000)")
+		}
+		// L1 ([ISI-965]): unknown event types are rejected only when
+		// the source is Enabled. Empty list still falls back to the
+		// canonical default at runtime (see DiscoveryGHArchiveConfig).
+		// Operators who want a narrower filter must pick from the
+		// allowlist; anything else points at a typo or an unsupported
+		// event class the collector won't track.
+		for _, evtType := range ga.EventTypes {
+			if _, ok := AllowedGHArchiveEventTypes[evtType]; !ok {
+				issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.event_types: unknown event type %q (allowed: WatchEvent, ForkEvent, PushEvent, PullRequestEvent)", evtType))
+			}
 		}
 	}
 	if ga.DailyCapWarn > 0 && ga.DailyCapHard > 0 && ga.DailyCapWarn >= ga.DailyCapHard {

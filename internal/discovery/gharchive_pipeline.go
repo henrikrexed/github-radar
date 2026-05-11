@@ -28,14 +28,18 @@ import (
 // counted here.
 
 // DiscoverFromGHArchive runs the gharchive event-stream discovery step.
-// Returns nil (with no error) when:
+// Returns an empty, non-nil *Result (with Topic="gharchive") and a nil
+// error when:
 //
 //   - Sources.GHArchive.Enabled is false, OR
 //   - SetGHArchiveSource has not been called (collector not wired).
 //
 // In both cases the daemon may have legitimate reasons to skip the
 // step — config-disabled or collector still warming — and bubbling an
-// error would noisily fail every DiscoverAll cycle.
+// error would noisily fail every DiscoverAll cycle. We return a
+// zero-value Result rather than nil so callers can rely on a
+// non-nil pointer and uniformly read counters/Repos without a nil
+// guard ([ISI-965] M1).
 //
 // AC mapping ([ISI-952]):
 //
@@ -46,7 +50,9 @@ import (
 //   - min_stars gate: Sources.GHArchive.MinStarsGate (0 = off).
 func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error) {
 	if !d.config.Sources.GHArchive.Enabled || d.ghArchive == nil {
-		return nil, nil
+		// M1 ([ISI-965]): non-nil empty Result on disabled/unwired
+		// early return so downstream code doesn't need a nil guard.
+		return &Result{Topic: "gharchive", Repos: []DiscoveredRepo{}}, nil
 	}
 
 	cfg := d.config.Sources.GHArchive
@@ -87,17 +93,26 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 		if !ok {
 			// gharchive should always produce "owner/name", but be
 			// defensive against malformed entries rather than
-			// failing the whole step.
-			d.log("debug", "gharchive: skipping malformed repo name", "name", act.RepoName)
+			// failing the whole step. M6 ([ISI-965]): log at warn
+			// and surface a counter so a sustained feed regression
+			// is observable (debug logs are typically dropped in
+			// prod).
+			result.Malformed++
+			d.log("warn", "gharchive: skipping malformed repo name", "name", act.RepoName)
 			continue
 		}
 		fullName := owner + "/" + name
 
 		// Tracked-repo dedup — AC: "Dedup against currently tracked
 		// repos (no duplicate ingest)." Stop here before paying the
-		// REST hydration cost.
+		// REST hydration cost. M2 ([ISI-965]): keep this early-skip
+		// (architect call) — do NOT mirror the topic-source pattern of
+		// appending tracked repos to the result. Per
+		// [ISI-953#comment-e28b713a] the REST hydration budget is
+		// the constraint, and early-skip preserves it.
 		if d.store.GetRepoState(fullName) != nil {
 			result.AlreadyTracked++
+			result.AlreadyTrackedSkipped++
 			continue
 		}
 
@@ -118,7 +133,27 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 			continue
 		}
 
-		// min_stars_gate — emergency throttle, off by default.
+		// M5 ([ISI-965]): defensive skip when hydration returns a
+		// metrics shape that can't yield a usable identifier. We
+		// need at least FullName, or both Owner+Name to reconstruct
+		// it (see buildDiscoveredFromGHArchive). Anything else points
+		// at a GitHub-side response anomaly we shouldn't propagate
+		// downstream — count it as Malformed and move on.
+		if metrics.FullName == "" && (metrics.Owner == "" || metrics.Name == "") {
+			result.Malformed++
+			d.log("warn", "gharchive: skipping repo with unidentifiable metrics",
+				"repo", fullName)
+			continue
+		}
+
+		// min_stars_gate — optional post-hydration star floor, off by
+		// default. M4 ([ISI-965]): the original "emergency throttle"
+		// framing implied a pre-hydration prefilter that doesn't
+		// exist — this check runs AFTER GetRepository so it can't
+		// shed REST load. It only filters the post-hydration result
+		// set. A true prefilter would need stars cached in
+		// state.Store from prior cycles; deferred to a follow-up
+		// issue per architect ruling in the parent description.
 		if cfg.MinStarsGate > 0 && metrics.Stars < cfg.MinStarsGate {
 			continue
 		}
@@ -161,7 +196,9 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 		"after_filters", result.AfterFilters,
 		"new", result.NewRepos,
 		"already_tracked", result.AlreadyTracked,
-		"excluded", result.Excluded)
+		"already_tracked_skipped", result.AlreadyTrackedSkipped,
+		"excluded", result.Excluded,
+		"malformed", result.Malformed)
 
 	return result, nil
 }

@@ -114,9 +114,11 @@ func repoEntry(fullName string, stars int) repoMetricsResponse {
 	}
 }
 
-// TestDiscoverFromGHArchive_DisabledReturnsNil — Sources.GHArchive.Enabled
-// false short-circuits cleanly: nil result, nil error, no REST calls.
-func TestDiscoverFromGHArchive_DisabledReturnsNil(t *testing.T) {
+// TestDiscoverFromGHArchive_DisabledReturnsEmpty — Sources.GHArchive.Enabled
+// false short-circuits cleanly: non-nil empty result, nil error, no REST
+// calls. M1 ([ISI-965]) made disabled return a zero-value Result rather
+// than nil so callers don't need a nil guard.
+func TestDiscoverFromGHArchive_DisabledReturnsEmpty(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -132,17 +134,24 @@ func TestDiscoverFromGHArchive_DisabledReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if result != nil {
-		t.Errorf("result = %+v, want nil", result)
+	if result == nil {
+		t.Fatal("result = nil; want non-nil empty Result (M1)")
+	}
+	if result.Topic != "gharchive" {
+		t.Errorf("Topic = %q, want gharchive", result.Topic)
+	}
+	if len(result.Repos) != 0 || result.TotalFound != 0 || result.NewRepos != 0 {
+		t.Errorf("expected zero-value Result counters, got %+v", result)
 	}
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Errorf("REST calls = %d, want 0 (disabled must short-circuit before hydration)", got)
 	}
 }
 
-// TestDiscoverFromGHArchive_NoCollectorReturnsNil — Enabled but the
-// daemon hasn't called SetGHArchiveSource. Same short-circuit.
-func TestDiscoverFromGHArchive_NoCollectorReturnsNil(t *testing.T) {
+// TestDiscoverFromGHArchive_NoCollectorReturnsEmpty — Enabled but the
+// daemon hasn't called SetGHArchiveSource. Same M1 short-circuit:
+// non-nil empty Result, nil error.
+func TestDiscoverFromGHArchive_NoCollectorReturnsEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	t.Cleanup(srv.Close)
 
@@ -155,8 +164,14 @@ func TestDiscoverFromGHArchive_NoCollectorReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if result != nil {
-		t.Errorf("result = %+v, want nil", result)
+	if result == nil {
+		t.Fatal("result = nil; want non-nil empty Result (M1)")
+	}
+	if result.Topic != "gharchive" {
+		t.Errorf("Topic = %q, want gharchive", result.Topic)
+	}
+	if len(result.Repos) != 0 || result.TotalFound != 0 {
+		t.Errorf("expected zero-value Result, got %+v", result)
 	}
 }
 
@@ -247,6 +262,12 @@ func TestDiscoverFromGHArchive_DedupAgainstStore(t *testing.T) {
 	}
 	if result.AlreadyTracked != 1 {
 		t.Errorf("AlreadyTracked = %d, want 1", result.AlreadyTracked)
+	}
+	// M2 ([ISI-965]): AlreadyTrackedSkipped mirrors the early-skip path
+	// so dedup-parity dashboards can separate it from generic
+	// AlreadyTracked counts.
+	if result.AlreadyTrackedSkipped != 1 {
+		t.Errorf("AlreadyTrackedSkipped = %d, want 1", result.AlreadyTrackedSkipped)
 	}
 	if result.NewRepos != 1 {
 		t.Errorf("NewRepos = %d, want 1", result.NewRepos)
@@ -413,9 +434,17 @@ func TestDiscoverFromGHArchive_HydrationFailureSkipped(t *testing.T) {
 	})
 	d.SetGHArchiveSource(src)
 
-	result, err := d.DiscoverFromGHArchive(context.Background())
+	ctx := context.Background()
+	result, err := d.DiscoverFromGHArchive(ctx)
 	if err != nil {
 		t.Fatalf("DiscoverFromGHArchive: %v (per-repo hydration failure must not bubble up)", err)
+	}
+	// M3 ([ISI-965]): the per-repo hydration error must NOT surface
+	// via the context — DiscoverFromGHArchive swallows the error and
+	// keeps going, so ctx.Err() must remain nil and the loop must have
+	// processed both candidates (good + missing → len >= 2).
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		t.Errorf("ctx.Err() = %v after hydration-error swallow; want nil", ctxErr)
 	}
 	if result.NewRepos != 1 {
 		t.Errorf("NewRepos = %d, want 1 (good/repo only)", result.NewRepos)
@@ -706,4 +735,104 @@ func TestDiscoverFromGHArchive_NotInPlanWhenDisabled(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestDiscoverFromGHArchive_MalformedCounters covers both M5 and M6
+// from [ISI-965]: a candidate whose name fails splitRepoName
+// (e.g. "noslash") and a candidate whose REST hydration returns an
+// unidentifiable payload (empty owner/name/fullname) must each
+// increment result.Malformed without bubbling an error or polluting
+// the per-repo results.
+func TestDiscoverFromGHArchive_MalformedCounters(t *testing.T) {
+	t.Run("split_fails_M6", func(t *testing.T) {
+		// "noslash" survives ProcessArchive (the collector keys by the
+		// raw repo name) and reaches the pipeline, where splitRepoName
+		// rejects it.
+		src := gharchiveTestSource(t, map[string]int{
+			"noslash":  20,
+			"ok/clean": 20,
+		})
+
+		rest := fakeRESTServer(t, map[string]repoMetricsResponse{
+			"ok/clean": repoEntry("ok/clean", 100),
+		})
+		t.Cleanup(rest.Close)
+
+		d := newPipelineDiscoverer(t, rest.URL, Config{
+			Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+				Enabled: true, TopN: 10, ActivityFloor: 1,
+			}},
+			AutoTrackThreshold: 1000,
+		})
+		d.SetGHArchiveSource(src)
+
+		result, err := d.DiscoverFromGHArchive(context.Background())
+		if err != nil {
+			t.Fatalf("DiscoverFromGHArchive: %v", err)
+		}
+		if result.Malformed != 1 {
+			t.Errorf("Malformed = %d, want 1 (splitRepoName failure)", result.Malformed)
+		}
+		if result.NewRepos != 1 {
+			t.Errorf("NewRepos = %d, want 1 (ok/clean only)", result.NewRepos)
+		}
+	})
+
+	t.Run("hydration_returns_unidentifiable_M5", func(t *testing.T) {
+		src := gharchiveTestSource(t, map[string]int{
+			"a/blank":  20,
+			"a/clean":  20,
+		})
+
+		// a/blank hydrates to an empty-fielded payload — owner login,
+		// name, and full_name all blank. M5 must skip + count Malformed.
+		rest := fakeRESTServer(t, map[string]repoMetricsResponse{
+			"a/blank": {Owner: map[string]string{"login": ""}, Name: "", FullName: "", Stars: 50},
+			"a/clean": repoEntry("a/clean", 100),
+		})
+		t.Cleanup(rest.Close)
+
+		d := newPipelineDiscoverer(t, rest.URL, Config{
+			Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+				Enabled: true, TopN: 10, ActivityFloor: 1,
+			}},
+			AutoTrackThreshold: 1000,
+		})
+		d.SetGHArchiveSource(src)
+
+		result, err := d.DiscoverFromGHArchive(context.Background())
+		if err != nil {
+			t.Fatalf("DiscoverFromGHArchive: %v", err)
+		}
+		if result.Malformed != 1 {
+			t.Errorf("Malformed = %d, want 1 (unidentifiable hydrated metrics)", result.Malformed)
+		}
+		if result.NewRepos != 1 {
+			t.Errorf("NewRepos = %d, want 1 (a/clean only)", result.NewRepos)
+		}
+	})
+}
+
+// TestTopActiveRepos_NPositiveDefaultsApplied — M7 ([ISI-965]) treats
+// n <= 0 as "use Default" rather than "no cap". Seed > DefaultGHArchiveTopN
+// repos and confirm the snapshot is capped at the default rather than
+// returning every tracked bucket.
+func TestTopActiveRepos_NonPositiveDefaultsApplied(t *testing.T) {
+	// One repo per bucket — DefaultGHArchiveTopN + a few to overflow.
+	repoEvents := make(map[string]int, DefaultGHArchiveTopN+5)
+	for i := 0; i < DefaultGHArchiveTopN+5; i++ {
+		// Use enough events to clear the default floor.
+		repoEvents[fmt.Sprintf("owner/r%05d", i)] = DefaultGHArchiveActivityFloor + 1
+	}
+	src := gharchiveTestSource(t, repoEvents)
+
+	for _, n := range []int{0, -1, -1000} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			out := src.TopActiveRepos(n, DefaultGHArchiveActivityFloor)
+			if len(out) != DefaultGHArchiveTopN {
+				t.Errorf("TopActiveRepos(%d, _) returned %d repos; want %d (default cap)",
+					n, len(out), DefaultGHArchiveTopN)
+			}
+		})
+	}
 }

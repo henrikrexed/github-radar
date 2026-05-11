@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -482,6 +483,161 @@ func TestValidate_GHArchiveDiscovery_EnabledRequiresPositives(t *testing.T) {
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should call out missing %s: %v", want, err)
+		}
+	}
+}
+
+// L1 ([ISI-965]): unknown event_types must be rejected only when the
+// source is Enabled. Empty list is allowed; runtime fills the canonical
+// default set.
+func TestValidate_GHArchiveDiscovery_EventTypesAllowlist(t *testing.T) {
+	t.Run("known_types_accepted_when_enabled", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Discovery.Sources.GHArchive = DiscoveryGHArchiveConfig{
+			Enabled:      true,
+			WindowHours:  24,
+			TopNPerHour:  500,
+			DailyCapWarn: 4000,
+			DailyCapHard: 5000,
+			EventTypes:   []string{"WatchEvent", "ForkEvent", "PushEvent", "PullRequestEvent"},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("canonical event_types must validate when enabled: %v", err)
+		}
+	})
+
+	t.Run("unknown_type_rejected_when_enabled", func(t *testing.T) {
+		cfg := validBaseConfig()
+		cfg.Discovery.Sources.GHArchive = DiscoveryGHArchiveConfig{
+			Enabled:      true,
+			WindowHours:  24,
+			TopNPerHour:  500,
+			DailyCapWarn: 4000,
+			DailyCapHard: 5000,
+			EventTypes:   []string{"WatchEvent", "BogusEvent"},
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("unknown event_types value must fail validation")
+		}
+		if !strings.Contains(err.Error(), "event_types") || !strings.Contains(err.Error(), "BogusEvent") {
+			t.Errorf("error should call out unknown event_types value: %v", err)
+		}
+	})
+
+	t.Run("unknown_type_ignored_when_disabled", func(t *testing.T) {
+		// When the source is disabled, the event_types list is dormant
+		// data; we deliberately don't lint it so an operator can stage
+		// edits behind the disabled flag.
+		cfg := validBaseConfig()
+		cfg.Discovery.Sources.GHArchive.EventTypes = []string{"BogusEvent"}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("event_types must not be linted when source disabled: %v", err)
+		}
+	})
+
+	t.Run("empty_event_types_accepted", func(t *testing.T) {
+		// Empty list means "use the runtime default"; not an error
+		// regardless of Enabled state.
+		cfg := validBaseConfig()
+		cfg.Discovery.Sources.GHArchive = DiscoveryGHArchiveConfig{
+			Enabled:      true,
+			WindowHours:  24,
+			TopNPerHour:  500,
+			DailyCapWarn: 4000,
+			DailyCapHard: 5000,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("empty event_types must validate: %v", err)
+		}
+	})
+}
+
+// L2 ([ISI-965]): WindowHours capped at 168 (one week). Beyond is
+// backfill, out of scope.
+func TestValidate_GHArchiveDiscovery_WindowHoursCap(t *testing.T) {
+	cases := []struct {
+		name        string
+		windowHours int
+		wantErr     bool
+	}{
+		{"under_cap", 24, false},
+		{"at_cap", 168, false},
+		{"over_cap", 169, true},
+		{"way_over_cap", 720, true}, // 30 days
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validBaseConfig()
+			cfg.Discovery.Sources.GHArchive.WindowHours = tc.windowHours
+			err := cfg.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("WindowHours=%d should fail validation", tc.windowHours)
+				}
+				if !strings.Contains(err.Error(), "window_hours") {
+					t.Errorf("error should mention window_hours: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("WindowHours=%d should validate: %v", tc.windowHours, err)
+				}
+			}
+		})
+	}
+}
+
+// L4 ([ISI-965]): end-to-end load of configs/github-radar.example.yaml
+// and assert the gharchive sub-tree round-trips. Guards against schema
+// drift between the example yaml and the Config struct tags.
+func TestLoad_GHArchive_FromExampleYAML(t *testing.T) {
+	// The example yaml lives at the repo root under configs/. From
+	// the package test working dir (internal/config) that's two levels up.
+	path := filepath.Join("..", "..", "configs", "github-radar.example.yaml")
+
+	// Load() expands ${GITHUB_TOKEN}; provide a dummy value so
+	// expansion succeeds. We're not exercising the github sub-tree
+	// here — just verifying the gharchive YAML round-trips through
+	// the loader. OTEL_ENDPOINT has a built-in ${VAR:-default}, so
+	// only GITHUB_TOKEN needs to be set.
+	t.Setenv("GITHUB_TOKEN", "test-token")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%s): %v", path, err)
+	}
+
+	ga := cfg.Discovery.Sources.GHArchive
+
+	if ga.Enabled {
+		t.Errorf("Enabled = %v, want false (example ships dark)", ga.Enabled)
+	}
+	if ga.WindowHours != 24 {
+		t.Errorf("WindowHours = %d, want 24", ga.WindowHours)
+	}
+	if ga.TopNPerHour != 500 {
+		t.Errorf("TopNPerHour = %d, want 500", ga.TopNPerHour)
+	}
+	if ga.ActivityFloor != 10 {
+		t.Errorf("ActivityFloor = %d, want 10", ga.ActivityFloor)
+	}
+	if ga.MinStarsGate != 0 {
+		t.Errorf("MinStarsGate = %d, want 0", ga.MinStarsGate)
+	}
+	if ga.DailyCapWarn != 4000 {
+		t.Errorf("DailyCapWarn = %d, want 4000", ga.DailyCapWarn)
+	}
+	if ga.DailyCapHard != 5000 {
+		t.Errorf("DailyCapHard = %d, want 5000", ga.DailyCapHard)
+	}
+
+	wantEventTypes := []string{"WatchEvent", "ForkEvent", "PushEvent", "PullRequestEvent"}
+	if got := ga.EventTypes; len(got) != len(wantEventTypes) {
+		t.Fatalf("EventTypes = %v, want %v", got, wantEventTypes)
+	}
+	for i, want := range wantEventTypes {
+		if ga.EventTypes[i] != want {
+			t.Errorf("EventTypes[%d] = %q, want %q", i, ga.EventTypes[i], want)
 		}
 	}
 }

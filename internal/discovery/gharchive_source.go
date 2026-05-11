@@ -651,6 +651,16 @@ func (s *GHArchiveSource) TopActiveRepos(n int, minEventsTotal int) []GHArchiveR
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// M7 ([ISI-965]): treat n <= 0 as "use the package default" so an
+	// accidental zero from a caller (e.g. unconfigured top-N) doesn't
+	// silently fall through to "no cap, return every tracked repo" —
+	// at full ring saturation that snapshot can be ~1M repos and blow
+	// the classifier queue. DefaultGHArchiveTopN is the documented
+	// soak default; the explicit-positive path is unchanged.
+	if n <= 0 {
+		n = DefaultGHArchiveTopN
+	}
+
 	// Snapshot all repos meeting the floor. We sort the snapshot
 	// rather than maintaining a heap online — N is bounded (Story 2
 	// uses N=500) and snapshot frequency is at most once per hour.

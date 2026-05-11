@@ -120,7 +120,9 @@ func newTestDiscoverer(t *testing.T, src discovery.GHArchiveSourceConfig) *disco
 
 // TestWireDiscoveryGHArchive_DisabledIsNoOp — when Enabled=false the
 // helper does nothing and the Discoverer's gharchive source remains
-// nil (DiscoverFromGHArchive returns (nil, nil)).
+// unwired. M1 ([ISI-965]) changed DiscoverFromGHArchive to return a
+// non-nil empty *Result (rather than nil) on the disabled gate, so
+// callers can iterate without a nil guard.
 func TestWireDiscoveryGHArchive_DisabledIsNoOp(t *testing.T) {
 	d := newTestDiscoverer(t, discovery.GHArchiveSourceConfig{Enabled: false})
 
@@ -132,8 +134,11 @@ func TestWireDiscoveryGHArchive_DisabledIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DiscoverFromGHArchive err = %v, want nil", err)
 	}
-	if res != nil {
-		t.Errorf("DiscoverFromGHArchive result = %+v, want nil (disabled gate)", res)
+	if res == nil {
+		t.Fatal("DiscoverFromGHArchive result = nil, want non-nil empty Result (M1)")
+	}
+	if res.TotalFound != 0 || res.NewRepos != 0 || len(res.Repos) != 0 {
+		t.Errorf("DiscoverFromGHArchive result = %+v, want empty Result (disabled gate)", res)
 	}
 }
 
