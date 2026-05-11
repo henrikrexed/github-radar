@@ -200,57 +200,54 @@ func TestMetricUnits_NoInvalidCharacters(t *testing.T) {
 	}
 }
 
-// TestRepoMetrics_AttributesEmitV3Taxonomy guards ISI-786: every recorded
-// `github.radar.*` series MUST carry the `subcategory` and `category_legacy`
-// attributes, even when the values are empty. Gating these on non-empty would
-// silently drop the dimension on rows that haven't been re-classified yet,
-// which is the exact regression Observability Agent surfaced on the dev
-// tenant.
+// TestRepoMetrics_AttributesEmitV3Taxonomy guards ISI-714: every recorded
+// `github.radar.*` series MUST carry the `subcategory` attribute, even when
+// the value is empty. Gating on non-empty would silently drop the dimension
+// on rows that haven't been re-classified yet, which is the exact regression
+// Observability Agent surfaced on the dev tenant.
+//
+// ISI-989 dropped the companion `category_legacy` attribute once the
+// dependency gate in ISI-718 confirmed no dashboard tile read it; this test
+// now also asserts the attribute is absent so a future revert is caught.
 func TestRepoMetrics_AttributesEmitV3Taxonomy(t *testing.T) {
 	cases := []struct {
 		name              string
 		m                 RepoMetrics
 		wantSubcategory   string
-		wantLegacy        string
 		wantCategoryAttr  bool
 		wantCategoryValue string
 	}{
 		{
 			name: "v3 taxonomy populated",
 			m: RepoMetrics{
-				Owner:          "kubernetes",
-				Name:           "kubernetes",
-				Categories:     []string{"cloud-native"},
-				Subcategory:    "kubernetes",
-				CategoryLegacy: "kubernetes",
+				Owner:       "kubernetes",
+				Name:        "kubernetes",
+				Categories:  []string{"cloud-native"},
+				Subcategory: "kubernetes",
 			},
 			wantSubcategory:   "kubernetes",
-			wantLegacy:        "kubernetes",
 			wantCategoryAttr:  true,
 			wantCategoryValue: "cloud-native",
 		},
 		{
-			name: "empty subcategory + legacy still emitted",
+			name: "empty subcategory still emitted",
 			m: RepoMetrics{
 				Owner:      "newowner",
 				Name:       "newrepo",
 				Categories: []string{"default"},
 			},
 			wantSubcategory:   "",
-			wantLegacy:        "",
 			wantCategoryAttr:  true,
 			wantCategoryValue: "default",
 		},
 		{
-			name: "no categories list — subcategory + legacy still emitted",
+			name: "no categories list — subcategory still emitted",
 			m: RepoMetrics{
-				Owner:          "owner",
-				Name:           "repo",
-				Subcategory:    "agents",
-				CategoryLegacy: "ai-agents",
+				Owner:       "owner",
+				Name:        "repo",
+				Subcategory: "agents",
 			},
 			wantSubcategory:  "agents",
-			wantLegacy:       "ai-agents",
 			wantCategoryAttr: false,
 		},
 	}
@@ -266,16 +263,13 @@ func TestRepoMetrics_AttributesEmitV3Taxonomy(t *testing.T) {
 
 			subVal, hasSub := seen["subcategory"]
 			if !hasSub {
-				t.Errorf("subcategory attribute missing — must be emitted unconditionally (ISI-786)")
+				t.Errorf("subcategory attribute missing — must be emitted unconditionally (ISI-714)")
 			} else if subVal != tc.wantSubcategory {
 				t.Errorf("subcategory = %q, want %q", subVal, tc.wantSubcategory)
 			}
 
-			legacyVal, hasLegacy := seen["category_legacy"]
-			if !hasLegacy {
-				t.Errorf("category_legacy attribute missing — must be emitted unconditionally (ISI-786)")
-			} else if legacyVal != tc.wantLegacy {
-				t.Errorf("category_legacy = %q, want %q", legacyVal, tc.wantLegacy)
+			if _, hasLegacy := seen["category_legacy"]; hasLegacy {
+				t.Errorf("category_legacy attribute present — emission retired in ISI-989")
 			}
 
 			catVal, hasCat := seen["category"]

@@ -784,17 +784,16 @@ func (d *Daemon) exportMetrics() {
 		// below can surface "pending" separately from "default" instead of
 		// conflating the two and hiding SQL Scan drift like the v3 incident.
 		var categories []string
-		var subcategory, categoryLegacy string
+		var subcategory string
 		repoStatus := ""
 		if d.db != nil {
 			if repo, err := d.db.GetRepo(fullName); err == nil && repo != nil {
 				repoStatus = repo.Status
-				cat, sub, legacy := repo.ResolveTaxonomy()
+				cat, sub, _ := repo.ResolveTaxonomy()
 				if cat != "" {
 					categories = []string{cat}
 				}
 				subcategory = sub
-				categoryLegacy = legacy
 			}
 		}
 		if len(categories) == 0 {
@@ -819,7 +818,6 @@ func (d *Daemon) exportMetrics() {
 			Language:          "", // Would need to store this in state
 			Categories:        categories,
 			Subcategory:       subcategory,
-			CategoryLegacy:    categoryLegacy,
 			Stars:             repoState.Stars,
 			Forks:             repoState.Forks,
 			OpenIssues:        0, // Would need to store this
