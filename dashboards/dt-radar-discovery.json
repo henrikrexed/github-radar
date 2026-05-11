@@ -1,149 +1,73 @@
 {
-  "_meta": {
-    "name": "dt-radar-discovery",
-    "purpose": "Monitor lag, throughput, dedup, and backpressure of the gharchive discovery pipeline during ISI-956 Stage C soak.",
-    "owner_story": "ISI-955",
-    "owner_agent": "Observability Agent",
-    "status": "DRAFT-PENDING-VALIDATION",
-    "blocking_dependencies": [
-      "ISI-951 — collector emitting metrics",
-      "ISI-952 — pipeline emitting candidates_total + dedup_ratio",
-      "ISI-954 — backpressure emitting classifier.queue_depth"
-    ],
-    "next_steps": [
-      "Once ISI-951 lands and metrics flow, validate every DQL query individually (timeseries field resolves, has datapoints, expected aggregation).",
-      "Replace any tile whose DQL returns empty after Story 1 lands — likely indicates instrument-name drift; reconcile against schemas/github-radar.yaml.",
-      "Set dashboardId after first successful deploy via dtctl; update tile share-links in ISI-955."
-    ],
-    "grid": {
-      "columns": 24,
-      "row_height_px": 32
-    },
-    "metric_namespace_note": "Dynatrace generic-metric ingest exposes OTLP names verbatim. timeseries selectors below use the dotted names from schemas/github-radar.yaml. If the team turns on Dynatrace metric-key normalization (dot → underscore), each `timeseries <name>` clause needs a one-pass rewrite."
-  },
-  "version": 18,
-  "variables": [],
-  "tiles": {
-    "0": {
-      "type": "markdown",
-      "title": "GitHub Radar — Discovery Pipeline (gharchive)",
-      "content": "# GitHub Radar — Discovery Pipeline\n\nMonitors the gharchive event-stream discovery source introduced in [ISI-950](https://example.invalid/ISI-950).\n\n**Current health gates** (from [ISI-950](https://example.invalid/ISI-950) acceptance):\n\n- Active repo count ≥ 5000 after 7-day soak\n- Classifier queue depth bounded\n- Live GitHub API rate-limit usage < 80%\n- Dedup working (ratio > 0.9 steady state)\n\n**Owner:** Observability Agent · **Story:** [ISI-955](https://example.invalid/ISI-955) · **Soak:** [ISI-956](https://example.invalid/ISI-956)"
-    },
-    "1": {
-      "type": "data",
-      "title": "Archive ingest lag (seconds)",
-      "subtitle": "Age of most-recently-processed gharchive archive. Steady-state: 5–80 min.",
-      "visualization": "lineChart",
-      "querySpec": {
-        "_DRAFT_PENDING_VALIDATION": true,
-        "queries": [
-          {
-            "id": "A",
-            "query": "timeseries lag = avg(github_radar.discovery.gharchive.lag_seconds), interval: 5m"
-          }
-        ],
-        "thresholds": [
-          { "value": 14400, "color": "RED",    "label": "alert: > 4h sustained" },
-          { "value":  3600, "color": "YELLOW", "label": "warn: > 1h" }
-        ]
-      }
-    },
-    "2": {
-      "type": "data",
-      "title": "Candidates discovered per hour",
-      "subtitle": "Repos surfaced by gharchive top-N + activity floor. Counter aggregated as hourly delta.",
-      "visualization": "barChart",
-      "querySpec": {
-        "_DRAFT_PENDING_VALIDATION": true,
-        "queries": [
-          {
-            "id": "A",
-            "query": "timeseries candidates = sum(github_radar.discovery.gharchive.candidates_total), interval: 1h, by: { event_type } | fieldsAdd candidates = candidates[]"
-          }
-        ]
-      }
-    },
-    "3": {
-      "type": "data",
-      "title": "Dedup ratio (gharchive vs tracked set)",
-      "subtitle": "Fraction of candidates dropped because already tracked. Steady-state target: > 0.9.",
-      "visualization": "lineChart",
-      "querySpec": {
-        "_DRAFT_PENDING_VALIDATION": true,
-        "queries": [
-          {
-            "id": "A",
-            "query": "timeseries dedup = avg(github_radar.discovery.gharchive.dedup_ratio), interval: 15m"
-          }
-        ],
-        "thresholds": [
-          { "value": 0.5, "color": "RED",    "label": "alert: < 0.5 (fresh repos dominating)" },
-          { "value": 0.9, "color": "YELLOW", "label": "warn: < 0.9 (warm-up)" }
-        ]
-      }
-    },
-    "4": {
-      "type": "data",
-      "title": "Classifier queue depth",
-      "subtitle": "Pending candidates waiting on classifier. Co-owned with ISI-954 backpressure.",
-      "visualization": "lineChart",
-      "querySpec": {
-        "_DRAFT_PENDING_VALIDATION": true,
-        "queries": [
-          {
-            "id": "A",
-            "query": "timeseries queue = max(github_radar.discovery.classifier.queue_depth), interval: 1m"
-          }
-        ],
-        "thresholds": [
-          { "value": 1000, "color": "YELLOW", "label": "Story 4 backpressure threshold" },
-          { "value": 5000, "color": "RED",    "label": "alert: classifier overrun" }
-        ]
-      }
-    },
-    "5": {
-      "type": "data",
-      "title": "Daily candidate count vs cap",
-      "subtitle": "Daily total of admitted candidates against Story 4 daily cap (default 5000/day).",
-      "visualization": "stackedBarChart",
-      "querySpec": {
-        "_DRAFT_PENDING_VALIDATION": true,
-        "_TODO_LINK": "Wire `cap` constant from Story 4 config emission once ISI-954 publishes a `discovery.gharchive.daily_cap` info-metric. Until then the cap line is hard-coded.",
-        "queries": [
-          {
-            "id": "A",
-            "query": "timeseries admitted = sum(github_radar.discovery.gharchive.candidates_total), interval: 1d"
+  "name": "GitHub Radar — gharchive Discovery (ISI-955)",
+  "type": "dashboard",
+  "content": {
+    "version": 21,
+    "variables": [],
+    "tiles": {
+      "0": {
+        "type": "markdown",
+        "title": "GitHub Radar — Discovery Pipeline (gharchive)",
+        "content": "# GitHub Radar — Discovery Pipeline\n\nMonitors the gharchive event-stream discovery source introduced in ISI-950 (Path C). Live metric emission is wired in ISI-955 hooks (`internal/daemon/gharchive_discovery_hooks.go`).\n\n**Current health gates** (from ISI-950 acceptance):\n\n- Active repo count ≥ 5000 after 7-day soak\n- Classifier queue depth bounded\n- Live GitHub API rate-limit usage < 80%\n- Dedup working (ratio > 0.9 steady state)\n\n**Phase B telemetry coverage (this dashboard rev):**\n\n| Tile | Series wired? | Gated on |\n|------|---|---|\n| Archive ingest lag | ✅ | merged + redeployed |\n| Events processed | ⚠️ scalar `event_type=unknown` | ISI-961 (per-type hook signature) |\n| Candidates per hour | ❌ | ISI-952 pipeline-hook follow-up |\n| Dedup ratio | ❌ | ISI-952 pipeline-hook follow-up |\n| Classifier queue depth | ❌ | ISI-954 backpressure-gate code |\n\nOwner: Observability Agent · Story: ISI-955 · Soak: ISI-956"
+      },
+      "1": {
+        "type": "data",
+        "title": "Archive ingest lag (seconds)",
+        "query": "timeseries lag = avg(github_radar.discovery.gharchive.lag_seconds), interval: 5m",
+        "visualization": "lineChart",
+        "visualizationSettings": {
+          "thresholds": [
+            {
+              "id": 0,
+              "field": "lag",
+              "isEnabled": true,
+              "rules": [
+                { "value": 3600, "color": { "Default": "var(--dt-colors-charts-warning-default)" } },
+                { "value": 14400, "color": { "Default": "var(--dt-colors-charts-critical-default)" } }
+              ]
+            }
+          ],
+          "chartSettings": {
+            "gapPolicy": "gap",
+            "circleChartSettings": { "groupingThresholdType": "relative", "groupingThresholdValue": 0, "valueType": "relative" },
+            "categoryOverrides": {},
+            "fieldMapping": { "timestamp": "timeframe", "leftAxisValues": ["lag"], "leftAxisDimensions": [], "fields": [], "values": [] }
           },
-          {
-            "id": "B",
-            "query": "timeseries cap = avg(github_radar.discovery.gharchive.daily_cap), interval: 1d, default: 5000"
-          }
-        ]
+          "singleValue": { "showLabel": true, "label": "Latest lag (s)", "prefixIcon": "", "recordField": "lag" },
+          "table": { "rowDensity": "condensed", "enableSparklines": false, "hiddenColumns": [], "lineWrapIds": [], "columnWidths": {} }
+        },
+        "querySettings": { "maxResultRecords": 1000, "defaultScanLimitGbytes": 500, "maxResultMegaBytes": 1, "defaultSamplingRatio": 10, "enableSampling": false }
+      },
+      "2": {
+        "type": "data",
+        "title": "Events processed (gharchive)",
+        "query": "timeseries events = sum(github_radar.discovery.gharchive.events_processed_total), interval: 5m, by: { event_type }",
+        "visualization": "areaChart",
+        "visualizationSettings": {
+          "chartSettings": {
+            "gapPolicy": "gap",
+            "categoryOverrides": {},
+            "fieldMapping": { "timestamp": "timeframe", "leftAxisValues": ["events"], "leftAxisDimensions": ["event_type"], "fields": [], "values": [] }
+          },
+          "singleValue": { "showLabel": true, "label": "Events", "prefixIcon": "", "recordField": "events" },
+          "table": { "rowDensity": "condensed", "enableSparklines": false, "hiddenColumns": [], "lineWrapIds": [], "columnWidths": {} }
+        },
+        "querySettings": { "maxResultRecords": 1000, "defaultScanLimitGbytes": 500, "maxResultMegaBytes": 1, "defaultSamplingRatio": 10, "enableSampling": false }
+      },
+      "3": {
+        "type": "markdown",
+        "title": "Pending tiles — wiring gaps",
+        "content": "### Tiles pending engineering merges\n\n- **Candidates per hour** + **Dedup ratio** — wait on a Story-2 pipeline-hook surface (`gharchive_pipeline.go`). Track as follow-up; named series:\n  - `github_radar.discovery.gharchive.candidates_total`\n  - `github_radar.discovery.gharchive.dedup_ratio`\n- **Classifier queue depth** — wait on ISI-954 (`gharchive_backpressure` branch not yet merged). Named series:\n  - `github_radar.discovery.classifier.queue_depth`\n- **Per-event-type breakdown** on the *Events processed* tile — wait on ISI-961 (keptPerType hook signature). Until merged the tile renders a single `event_type=unknown` row.\n\nInstrument registry already lives in `internal/metrics/discovery_meters.go` — once each emission site lands, the dashboard tiles light up without a JSON change."
       }
     },
-    "6": {
-      "type": "data",
-      "title": "Events processed by type",
-      "subtitle": "Raw gharchive events processed after event_type filter. Spot drift in event-type mix.",
-      "visualization": "areaChart",
-      "querySpec": {
-        "_DRAFT_PENDING_VALIDATION": true,
-        "queries": [
-          {
-            "id": "A",
-            "query": "timeseries events = sum(github_radar.discovery.gharchive.events_processed_total), interval: 5m, by: { event_type }"
-          }
-        ]
-      }
+    "layouts": {
+      "0": { "x": 0,  "y": 0,  "w": 24, "h": 4 },
+      "1": { "x": 0,  "y": 4,  "w": 12, "h": 8 },
+      "2": { "x": 12, "y": 4,  "w": 12, "h": 8 },
+      "3": { "x": 0,  "y": 12, "w": 24, "h": 4 }
+    },
+    "settings": {
+      "gridLayout": { "columnsCount": 24 }
     }
-  },
-  "layouts": {
-    "0": { "x":  0, "y":  0, "w": 24, "h": 3 },
-    "1": { "x":  0, "y":  3, "w": 12, "h": 6 },
-    "2": { "x": 12, "y":  3, "w": 12, "h": 6 },
-    "3": { "x":  0, "y":  9, "w": 12, "h": 6 },
-    "4": { "x": 12, "y":  9, "w": 12, "h": 6 },
-    "5": { "x":  0, "y": 15, "w": 12, "h": 6 },
-    "6": { "x": 12, "y": 15, "w": 12, "h": 6 }
   }
 }
