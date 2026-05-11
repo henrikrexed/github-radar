@@ -261,14 +261,29 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		if cursorStore == nil {
 			logging.Warn("gharchive discovery source requested but metadata DB unavailable; source disabled this run",
 				"hint", "open the database (XDG_DATA_HOME / ~/.local/share/github-radar/scanner.db) so the cursor can persist")
-		} else if err := wireDiscoveryGHArchive(disc, cfg.Discovery.Sources.GHArchive, cursorStore); err != nil {
-			return nil, fmt.Errorf("wiring gharchive discovery source: %w", err)
 		} else {
+			// [ISI-955] Story 5 — wire gharchive-discovery telemetry.
+			// dm == nil is fine: wireDiscoveryGHArchive treats a nil
+			// meters registry as "no telemetry this run" without
+			// disabling the source itself.
+			var dm *metrics.DiscoveryMeters
+			if exp != nil {
+				if registered, derr := metrics.NewDiscoveryMeters(exp.Meter()); derr != nil {
+					logging.Warn("gharchive discovery meters registration failed; running source without telemetry",
+						"error", derr)
+				} else {
+					dm = registered
+				}
+			}
+			if err := wireDiscoveryGHArchive(ctx, disc, cfg.Discovery.Sources.GHArchive, cursorStore, dm); err != nil {
+				return nil, fmt.Errorf("wiring gharchive discovery source: %w", err)
+			}
 			logging.Info("gharchive discovery source enabled",
 				"window_hours", cfg.Discovery.Sources.GHArchive.WindowHours,
 				"top_n_per_hour", cfg.Discovery.Sources.GHArchive.TopNPerHour,
 				"activity_floor", cfg.Discovery.Sources.GHArchive.ActivityFloor,
-				"min_stars_gate", cfg.Discovery.Sources.GHArchive.MinStarsGate)
+				"min_stars_gate", cfg.Discovery.Sources.GHArchive.MinStarsGate,
+				"telemetry_enabled", dm != nil)
 		}
 	}
 
