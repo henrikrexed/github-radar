@@ -5,10 +5,15 @@ import (
 	"testing"
 )
 
-// The canonical 42 legacy flat values present in scanner.db as of the 2026-04-24
-// migration-design ground-truth snapshot (ISI-712 §2.4). This list is duplicated
-// here on purpose: LegacyCategoryMap is the production source of truth; this
-// slice is a test-time pin that fails loudly if a value is ever dropped.
+// The canonical legacy flat values present in scanner.db. Initial 42 entries
+// from the 2026-04-24 migration-design ground-truth snapshot (ISI-712 §2.4);
+// `css-and-styling` was appended in ISI-984 after round-3 cardinality probes
+// surfaced it as a classifier-emitted granular slug not yet in the lookup,
+// leaking into the metric `category` field on the T3 exporter.
+//
+// This list is duplicated here on purpose: LegacyCategoryMap is the production
+// source of truth; this slice is a test-time pin that fails loudly if a value
+// is ever dropped.
 var legacyFlatValuesSpec = []string{
 	"ai-agents", "ai-coding-assistants", "llm-tooling", "mcp-ecosystem",
 	"voice-and-audio-ai", "ai-infrastructure", "desktop-apps", "cybersecurity",
@@ -20,15 +25,19 @@ var legacyFlatValuesSpec = []string{
 	"data-engineering", "privacy-tools", "low-code-automation", "kubernetes",
 	"game-development", "blockchain-web3", "wasm", "testing",
 	"container-runtime", "web-frameworks", "mlops", "gitops",
-	"cloud-native-security",
+	"cloud-native-security", "css-and-styling",
 }
 
-func TestLegacyCategoryMap_CoversAll42Values(t *testing.T) {
-	if len(legacyFlatValuesSpec) != 42 {
-		t.Fatalf("spec list length = %d, want 42 — test constant drifted", len(legacyFlatValuesSpec))
+const legacyFlatValuesExpectedCount = 43
+
+func TestLegacyCategoryMap_CoversAllLegacyValues(t *testing.T) {
+	if len(legacyFlatValuesSpec) != legacyFlatValuesExpectedCount {
+		t.Fatalf("spec list length = %d, want %d — test constant drifted",
+			len(legacyFlatValuesSpec), legacyFlatValuesExpectedCount)
 	}
-	if len(LegacyCategoryMap) != 42 {
-		t.Fatalf("LegacyCategoryMap has %d entries, want 42", len(LegacyCategoryMap))
+	if len(LegacyCategoryMap) != legacyFlatValuesExpectedCount {
+		t.Fatalf("LegacyCategoryMap has %d entries, want %d",
+			len(LegacyCategoryMap), legacyFlatValuesExpectedCount)
 	}
 	for _, legacy := range legacyFlatValuesSpec {
 		if _, ok := LegacyCategoryMap[legacy]; !ok {
@@ -147,6 +156,141 @@ func TestRepoRecord_ResolveTaxonomy(t *testing.T) {
 			if cat != tc.wantCat || sub != tc.wantSub || legacy != tc.wantLegacy {
 				t.Errorf("ResolveTaxonomy() = (%q, %q, %q), want (%q, %q, %q)",
 					cat, sub, legacy, tc.wantCat, tc.wantSub, tc.wantLegacy)
+			}
+		})
+	}
+}
+
+// TestRepoRecord_ResolveTaxonomy_ISI984LegacyCategoryRollup covers the
+// regression where rows that had been *partially* re-classified — primary
+// category still on a legacy flat slug but PrimarySubcategory already
+// populated with a v3 subcategory — slipped through the original
+// `subcategory == ""` collapse guard and leaked the legacy slug into the
+// metric `category` field on the T3 exporter.
+//
+// Smoking-gun rows are the verdict-comment samples on ISI-984, captured
+// from `dynatrace-dev` (oat05854) at 2026-05-11T08:18Z.
+func TestRepoRecord_ResolveTaxonomy_ISI984LegacyCategoryRollup(t *testing.T) {
+	cases := []struct {
+		name                         string
+		r                            RepoRecord
+		wantCat, wantSub, wantLegacy string
+	}{
+		{
+			name: "(llm-tooling, llm-tooling, llm-tooling) → (ai, llm-tooling, llm-tooling)",
+			r: RepoRecord{
+				PrimaryCategory:       "llm-tooling",
+				PrimarySubcategory:    "llm-tooling",
+				PrimaryCategoryLegacy: "llm-tooling",
+			},
+			wantCat: "ai", wantSub: "llm-tooling", wantLegacy: "llm-tooling",
+		},
+		{
+			name: "(mcp-ecosystem, mcp-ecosystem, mcp-ecosystem) → (ai, mcp-ecosystem, mcp-ecosystem)",
+			r: RepoRecord{
+				PrimaryCategory:       "mcp-ecosystem",
+				PrimarySubcategory:    "mcp-ecosystem",
+				PrimaryCategoryLegacy: "mcp-ecosystem",
+			},
+			wantCat: "ai", wantSub: "mcp-ecosystem", wantLegacy: "mcp-ecosystem",
+		},
+		{
+			name: "(ai-agents, agents, ai-agents) → (ai, agents, ai-agents)",
+			r: RepoRecord{
+				PrimaryCategory:       "ai-agents",
+				PrimarySubcategory:    "agents",
+				PrimaryCategoryLegacy: "ai-agents",
+			},
+			wantCat: "ai", wantSub: "agents", wantLegacy: "ai-agents",
+		},
+		{
+			name: "(ai-agents, infrastructure, ai-infrastructure) → (ai, infrastructure, ai-infrastructure)",
+			r: RepoRecord{
+				PrimaryCategory:       "ai-agents",
+				PrimarySubcategory:    "infrastructure",
+				PrimaryCategoryLegacy: "ai-infrastructure",
+			},
+			wantCat: "ai", wantSub: "infrastructure", wantLegacy: "ai-infrastructure",
+		},
+		{
+			name: "(ai-agents, llm-tooling, llm-tooling) → (ai, llm-tooling, llm-tooling)",
+			r: RepoRecord{
+				PrimaryCategory:       "ai-agents",
+				PrimarySubcategory:    "llm-tooling",
+				PrimaryCategoryLegacy: "llm-tooling",
+			},
+			wantCat: "ai", wantSub: "llm-tooling", wantLegacy: "llm-tooling",
+		},
+		{
+			// Defense-in-depth: if a row carries a legacy `category` slug AND a
+			// `subcategory` value that is NOT valid under the rolled-up top-level,
+			// fall back to the legacy pair's subcategory so the (cat, sub) tuple
+			// stays inside TaxonomyV2 — otherwise an invalid pair leaks downstream.
+			name: "(llm-tooling, datasets, '') → (ai, llm-tooling, llm-tooling) — invalid sub falls back",
+			r: RepoRecord{
+				PrimaryCategory:       "llm-tooling",
+				PrimarySubcategory:    "datasets", // datasets is under `science`, not `ai`
+				PrimaryCategoryLegacy: "",
+			},
+			wantCat: "ai", wantSub: "llm-tooling", wantLegacy: "llm-tooling",
+		},
+		{
+			// `css-and-styling` was added to LegacyCategoryMap in ISI-984.
+			name: "(css-and-styling, '', '') → (web, css-styling, css-and-styling) — new ISI-984 entry",
+			r: RepoRecord{
+				PrimaryCategory:       "css-and-styling",
+				PrimarySubcategory:    "",
+				PrimaryCategoryLegacy: "",
+			},
+			wantCat: "web", wantSub: "css-styling", wantLegacy: "css-and-styling",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cat, sub, legacy := tc.r.ResolveTaxonomy()
+			if cat != tc.wantCat || sub != tc.wantSub || legacy != tc.wantLegacy {
+				t.Errorf("ResolveTaxonomy() = (%q, %q, %q), want (%q, %q, %q)",
+					cat, sub, legacy, tc.wantCat, tc.wantSub, tc.wantLegacy)
+			}
+		})
+	}
+}
+
+// TestRepoRecord_ResolveTaxonomy_EveryLegacySlugRollsUp sweeps every key in
+// LegacyCategoryMap, feeds it into ResolveTaxonomy with a representative
+// "partially-reclassified" row shape (PrimarySubcategory non-empty and valid
+// under the rolled-up top-level), and asserts the emitted `category` is the
+// v3 top-level — never the legacy flat slug itself. This is the structural
+// guarantee ISI-984 round-3 needed: no legacy slug ever leaks into the
+// exporter `category` field once it's in the lookup. Lifting `cardinality(category)`
+// to ≤ len(TaxonomyV2) is a function of this property + classifier output.
+func TestRepoRecord_ResolveTaxonomy_EveryLegacySlugRollsUp(t *testing.T) {
+	for legacy, pair := range LegacyCategoryMap {
+		legacy, pair := legacy, pair
+		t.Run("legacy="+legacy, func(t *testing.T) {
+			// Pick a representative subcategory that is valid under the
+			// rolled-up top-level. pair.Subcategory is by construction valid
+			// under pair.Category (TestLegacyCategoryMap_AllPairsAreInTaxonomyV2).
+			r := RepoRecord{
+				PrimaryCategory:       legacy,
+				PrimarySubcategory:    pair.Subcategory,
+				PrimaryCategoryLegacy: legacy,
+			}
+			cat, sub, gotLegacy := r.ResolveTaxonomy()
+			if cat == legacy && legacy != pair.Category {
+				t.Fatalf("legacy slug %q leaked into category field after rollup", legacy)
+			}
+			if cat != pair.Category {
+				t.Errorf("category = %q, want %q (v3 top-level for legacy %q)",
+					cat, pair.Category, legacy)
+			}
+			if sub != pair.Subcategory {
+				t.Errorf("subcategory = %q, want %q (v3 sub for legacy %q)",
+					sub, pair.Subcategory, legacy)
+			}
+			if gotLegacy != legacy {
+				t.Errorf("legacy = %q, want %q (original flat slug preserved)",
+					gotLegacy, legacy)
 			}
 		})
 	}

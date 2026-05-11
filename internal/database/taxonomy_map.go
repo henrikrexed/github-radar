@@ -44,13 +44,18 @@ type TaxonomyPair struct {
 	Subcategory string
 }
 
-// LegacyCategoryMap maps each of the 42 legacy flat `primary_category` values
-// present in scanner.db (ground-truth snapshot 2026-04-24, 559 active repos)
-// to its (category, subcategory) pair. Source: ISI-712 §2.4.
+// LegacyCategoryMap maps each legacy flat `primary_category` value present in
+// scanner.db to its (category, subcategory) pair under TaxonomyV2.
+//
+// Source: ISI-712 §2.4 (initial 42 entries from the 2026-04-24 ground-truth
+// snapshot, 559 active repos). One additional entry — `css-and-styling` —
+// was added in ISI-984 after the round-3 cardinality probe surfaced it as a
+// classifier-emitted granular slug not yet in this lookup, leaking into the
+// `category` field on the T3 exporter.
 //
 // The backfill SQL in MigrateTaxonomyV2 is derived from this table; this map
-// is also the source of truth for the coverage unit test asserting all 42
-// legacy values are present.
+// is also the source of truth for the coverage unit test asserting every
+// known legacy value is present and resolves to a TaxonomyV2 pair.
 var LegacyCategoryMap = map[string]TaxonomyPair{
 	"ai-agents":             {"ai", "agents"},
 	"ai-coding-assistants":  {"ai", "coding-assistants"},
@@ -73,6 +78,7 @@ var LegacyCategoryMap = map[string]TaxonomyPair{
 	"cloud-native-security": {"cloud-native", "security"},
 	"web-frameworks":        {"web", "frameworks"},
 	"frontend-ui":           {"web", "frontend-ui"},
+	"css-and-styling":       {"web", "css-styling"},
 	"mobile-development":    {"mobile-desktop", "mobile"},
 	"desktop-apps":          {"mobile-desktop", "desktop"},
 	"rust-ecosystem":        {"systems", "rust-ecosystem"},
@@ -110,7 +116,7 @@ func LookupLegacyCategory(legacy string) TaxonomyPair {
 
 // ResolveTaxonomy returns the (category, subcategory, legacy) triple to emit
 // for a repo, honoring force_* overrides and gracefully handling rows that
-// still hold pre-v3 flat values in primary_category. ISI-786.
+// still hold pre-v3 flat values in primary_category. ISI-786, ISI-984.
 //
 // Resolution rules:
 //
@@ -118,11 +124,19 @@ func LookupLegacyCategory(legacy string) TaxonomyPair {
 //     ForceSubcategory, legacy = PrimaryCategoryLegacy (admin pin wins).
 //   - otherwise → category = PrimaryCategory, subcategory =
 //     PrimarySubcategory, legacy = PrimaryCategoryLegacy.
-//   - if subcategory is empty AND category matches a legacy flat slug from
-//     LegacyCategoryMap, collapse via LookupLegacyCategory so the v3 (cat,
-//     sub) tuple is emitted and primary_category falls into legacy. This
-//     keeps the metric-export path correct for repos still carrying flat
-//     values from pre-v3 classifier output.
+//   - if `category` matches a legacy flat slug from LegacyCategoryMap,
+//     always roll it up to the v3 top-level (regardless of subcategory).
+//     The original flat slug is preserved in `legacy` when that field was
+//     empty. The existing subcategory wins when it is a valid pair under
+//     the rolled-up top-level (TaxonomyV2); otherwise we fall back to the
+//     legacy pair's subcategory so the (cat, sub) tuple stays closed-set.
+//
+// The earlier ISI-786 implementation gated the rollup on `subcategory == ""`,
+// which only caught pre-v3 rows that had never been re-classified. Rows
+// that had been *partially* re-classified — `PrimaryCategory` still on the
+// legacy flat slug but `PrimarySubcategory` already populated with a v3
+// subcategory — slipped through and leaked the legacy slug into the metric
+// `category` field on the T3 exporter (ISI-984 round-3 verdict).
 //
 // The triple is always emitted unconditionally on the metric — even when
 // any leg is empty — so the dashboard sees a stable attribute shape across
@@ -138,13 +152,14 @@ func (r *RepoRecord) ResolveTaxonomy() (category, subcategory, legacy string) {
 		subcategory = r.PrimarySubcategory
 		legacy = r.PrimaryCategoryLegacy
 	}
-	if subcategory == "" {
-		if pair, ok := LegacyCategoryMap[category]; ok {
-			if legacy == "" {
-				legacy = category
-			}
-			category, subcategory = pair.Category, pair.Subcategory
+	if pair, ok := LegacyCategoryMap[category]; ok {
+		if legacy == "" {
+			legacy = category
 		}
+		if subcategory == "" || !IsAllowedPair(pair.Category, subcategory) {
+			subcategory = pair.Subcategory
+		}
+		category = pair.Category
 	}
 	return category, subcategory, legacy
 }
