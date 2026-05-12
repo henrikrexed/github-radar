@@ -54,11 +54,16 @@ import (
 // "Mapping helper in internal/daemon translates
 // config.DiscoveryGHArchiveConfig → discovery.GHArchiveSourceConfig".
 func mapDiscoveryGHArchiveConfig(cfg config.DiscoveryGHArchiveConfig) discovery.GHArchiveSourceConfig {
+	var cacheTTL time.Duration
+	if cfg.MinStarsCacheTTLHours > 0 {
+		cacheTTL = time.Duration(cfg.MinStarsCacheTTLHours) * time.Hour
+	}
 	return discovery.GHArchiveSourceConfig{
-		Enabled:       cfg.Enabled,
-		TopN:          cfg.TopNPerHour,
-		ActivityFloor: cfg.ActivityFloor,
-		MinStarsGate:  cfg.MinStarsGate,
+		Enabled:          cfg.Enabled,
+		TopN:             cfg.TopNPerHour,
+		ActivityFloor:    cfg.ActivityFloor,
+		MinStarsGate:     cfg.MinStarsGate,
+		MinStarsCacheTTL: cacheTTL,
 	}
 }
 

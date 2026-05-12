@@ -60,8 +60,13 @@ type SourcesConfig struct {
 //
 // `min_stars_gate` is OFF by default per the [ISI-952 sign-off]:
 // gharchive's event volume is intended as the sole signal during
-// initial soak. The flag is wired as an emergency throttle if
-// classifier load spikes mid-soak.
+// initial soak. When non-zero the gate actually sheds REST hydration
+// load on cycle 2+ — the pipeline consults state.Store's per-repo
+// stargazer cache and skips hydration for candidates whose cached
+// stars are below the gate and still fresh (ISI-982 follow-up).
+// On the first cycle (cold cache) and after the TTL expires, the
+// pipeline falls back to hydrate + post-filter to keep the failing-
+// safe semantics.
 type GHArchiveSourceConfig struct {
 	// Enabled gates whether Source (5) runs at all. When false the
 	// Discoverer never reads from the collector, even if a collector
@@ -74,12 +79,29 @@ type GHArchiveSourceConfig struct {
 	// collector's sliding window for a repo to be considered. Zero
 	// falls back to DefaultGHArchiveActivityFloor.
 	ActivityFloor int `yaml:"activity_floor"`
-	// MinStarsGate is an optional star floor applied AFTER REST
-	// hydration. Zero (the default) disables the gate so event
-	// volume is the sole filter; set non-zero only as an emergency
-	// throttle to drop hobby/spam repos when classifier capacity is
-	// saturated.
+	// MinStarsGate is an optional star floor applied to gharchive-
+	// discovered candidates. Zero (the default) disables the gate so
+	// event volume is the sole filter.
+	//
+	// When non-zero, the gate sheds REST hydration load on cycle 2+
+	// by consulting state.Store's per-repo stargazer cache before
+	// calling GetRepository: candidates whose cached `Stars <
+	// MinStarsGate` and whose observation is still within
+	// MinStarsCacheTTL are skipped without hydration and counted in
+	// Result.MinStarsPrefiltered. On cold cache (no observation) or
+	// after TTL expiry, the pipeline falls back to hydrate +
+	// post-filter so the gate still applies correctly. Cycle-1 cost
+	// is unchanged; the savings accrue from cycle 2 onward.
 	MinStarsGate int `yaml:"min_stars_gate"`
+	// MinStarsCacheTTL is the freshness window for the per-repo
+	// stargazer cache consulted by the MinStarsGate prefilter
+	// (ISI-982). Stale entries (older than this) are ignored and
+	// the pipeline falls back to hydrating so a repo that has since
+	// gone viral isn't permanently shadowed by an old low-star
+	// reading. Zero falls back to
+	// DefaultGHArchiveMinStarsCacheTTL (7 days, matches the
+	// collector window's order of magnitude).
+	MinStarsCacheTTL time.Duration `yaml:"min_stars_cache_ttl"`
 }
 
 // Soak defaults for gharchive discovery, approved by architect in
@@ -92,6 +114,12 @@ const (
 	// event count for a repo to be considered. Computed against the
 	// collector's full window (default 24h), not the latest hour.
 	DefaultGHArchiveActivityFloor = 10
+	// DefaultGHArchiveMinStarsCacheTTL is the default freshness
+	// window for the per-repo stargazer cache used by the
+	// MinStarsGate prefilter (ISI-982). 7 days balances "skip
+	// repeat hydration of obviously-small repos" against "don't
+	// permanently shadow a repo that has since gone viral".
+	DefaultGHArchiveMinStarsCacheTTL = 7 * 24 * time.Hour
 )
 
 // OrgsSourceConfig configures Source (3): per-org repository search.
@@ -170,7 +198,13 @@ type Result struct {
 	AutoTracked    int
 	AlreadyTracked int
 	Excluded       int
-	Repos          []DiscoveredRepo
+	// MinStarsPrefiltered counts candidates skipped before REST
+	// hydration because state.Store's cached stargazer count was
+	// below MinStarsGate and still within MinStarsCacheTTL. Only
+	// emitted by the gharchive pipeline (ISI-982); search-API
+	// sources leave it at zero.
+	MinStarsPrefiltered int
+	Repos               []DiscoveredRepo
 }
 
 // DefaultSearchAPIThrottle is the minimum delay between successive

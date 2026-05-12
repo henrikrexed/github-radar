@@ -80,7 +80,8 @@ discovery:
         - ForkEvent
         - PushEvent
         - PullRequestEvent
-      min_stars_gate: 0                                                       # optional star floor for gharchive candidates; 0 disables (let event volume be sole signal)
+      min_stars_gate: 0                                                       # optional star floor for gharchive candidates; 0 disables (let event volume be sole signal). When non-zero, sheds REST hydration cost from cycle 2 onward via the cached-stars prefilter.
+      min_stars_cache_ttl_hours: 168                                          # freshness window (hours) for the per-repo stargazer cache used by the min_stars_gate prefilter. 168h = 7d. Stale entries fall back to hydrating.
       daily_cap_warn: 4000                                                    # yellow signal — Dynatrace dashboard warn threshold (does NOT pause emission)
       daily_cap_hard: 5000                                                    # circuit-breaker — pauses emission for the rest of the UTC day when reached
   topics:

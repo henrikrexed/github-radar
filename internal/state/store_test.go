@@ -234,3 +234,93 @@ func TestStore_LastScan(t *testing.T) {
 		t.Errorf("GetLastScan() = %v, want %v", store.GetLastScan(), scanTime)
 	}
 }
+
+// TestStore_StarObservations covers Get/Set, JSON roundtrip, and the
+// failing-safe load path: a state.json written before ISI-982 (no
+// star_observations key) must Load cleanly with an empty (non-nil) map.
+func TestStore_StarObservations(t *testing.T) {
+	store := NewStore("")
+
+	// Initial Get must report "not present" — the prefilter relies on
+	// this to fall through to hydrate on cold cache.
+	if _, ok := store.GetStarObservation("owner/repo"); ok {
+		t.Error("GetStarObservation() on fresh store reported ok=true; want false (cold cache)")
+	}
+
+	obs := StarObservation{
+		Stars:      42,
+		ObservedAt: time.Date(2026, 5, 12, 9, 0, 0, 0, time.UTC),
+	}
+	store.SetStarObservation("owner/repo", obs)
+
+	got, ok := store.GetStarObservation("owner/repo")
+	if !ok {
+		t.Fatalf("GetStarObservation() reported ok=false after Set; want true")
+	}
+	if got.Stars != 42 || !got.ObservedAt.Equal(obs.ObservedAt) {
+		t.Errorf("roundtrip mismatch: got %+v, want %+v", got, obs)
+	}
+	if !store.IsModified() {
+		t.Error("IsModified() = false after SetStarObservation; want true")
+	}
+
+	// JSON roundtrip: Save then Load must preserve the observation.
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "state.json")
+	store2 := NewStore(path)
+	store2.SetStarObservation("foo/bar", obs)
+	if err := store2.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	store3 := NewStore(path)
+	if err := store3.Load(); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got, ok = store3.GetStarObservation("foo/bar")
+	if !ok {
+		t.Fatalf("post-Load GetStarObservation() ok=false; want true")
+	}
+	if got.Stars != obs.Stars || !got.ObservedAt.Equal(obs.ObservedAt) {
+		t.Errorf("post-Load mismatch: got %+v, want %+v", got, obs)
+	}
+}
+
+// TestStore_LegacyStateWithoutStarObservations confirms a pre-ISI-982
+// state.json (no `star_observations` key) loads cleanly and writes are
+// safe on the empty map (no nil-map panic in SetStarObservation).
+func TestStore_LegacyStateWithoutStarObservations(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "state.json")
+
+	// Write a legacy state file with no star_observations field.
+	legacy := []byte(`{
+  "version": 1,
+  "last_scan": "2026-02-15T12:00:00Z",
+  "repos": {},
+  "discovery": {
+    "last_scan": "2026-02-15T12:00:00Z",
+    "known_repos": {},
+    "topic_scans": {}
+  }
+}`)
+	if err := os.WriteFile(path, legacy, 0644); err != nil {
+		t.Fatalf("seed legacy state: %v", err)
+	}
+
+	store := NewStore(path)
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load() legacy file: %v", err)
+	}
+
+	// Lookup must report "not present"; no panic.
+	if _, ok := store.GetStarObservation("any/repo"); ok {
+		t.Error("legacy file reported a star observation; want none")
+	}
+
+	// Write must succeed without a nil-map panic (Load initializes the
+	// map when absent).
+	store.SetStarObservation("any/repo", StarObservation{Stars: 1, ObservedAt: time.Now()})
+	if _, ok := store.GetStarObservation("any/repo"); !ok {
+		t.Error("post-write GetStarObservation() ok=false; want true")
+	}
+}

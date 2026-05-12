@@ -707,3 +707,248 @@ func TestDiscoverFromGHArchive_NotInPlanWhenDisabled(t *testing.T) {
 		}
 	})
 }
+
+// TestDiscoverFromGHArchive_MinStarsPrefilter_ColdCache — first cycle:
+// no observation in state.Store, so the prefilter has nothing to act on
+// and every candidate still goes through REST hydration. After the run
+// the cache is populated for the next cycle. Confirms the failing-safe
+// path: an absent cache entry does NOT silently drop the repo.
+func TestDiscoverFromGHArchive_MinStarsPrefilter_ColdCache(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{
+		"low/repo":  50,
+		"high/repo": 50,
+	})
+
+	var hydratedNames []string
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/repos/")
+		hydratedNames = append(hydratedNames, path)
+		w.Header().Set("Content-Type", "application/json")
+		entry := repoEntry(path, 500) // default
+		if path == "low/repo" {
+			entry = repoEntry(path, 5)
+		}
+		_ = json.NewEncoder(w).Encode(entry)
+	}))
+	t.Cleanup(rest.Close)
+
+	d := newPipelineDiscoverer(t, rest.URL, Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+			MinStarsGate:     100,
+			MinStarsCacheTTL: time.Hour, // any non-zero value
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+
+	// Cold cache → every candidate hydrated. Both names must appear.
+	hydratedSet := map[string]bool{}
+	for _, n := range hydratedNames {
+		hydratedSet[n] = true
+	}
+	if !hydratedSet["low/repo"] || !hydratedSet["high/repo"] {
+		t.Errorf("hydratedNames = %v, want both low/repo + high/repo (cold cache must hydrate)", hydratedNames)
+	}
+
+	// Prefilter counter must stay zero — nothing to skip on cycle 1.
+	if result.MinStarsPrefiltered != 0 {
+		t.Errorf("MinStarsPrefiltered = %d, want 0 (cold cache cannot prefilter)", result.MinStarsPrefiltered)
+	}
+
+	// Post-hydration gate still works: low/repo gets dropped, high/repo keeps.
+	if result.NewRepos != 1 {
+		t.Errorf("NewRepos = %d, want 1 (post-filter still applies on cold cache)", result.NewRepos)
+	}
+
+	// Cache writeback must have happened for both observations so cycle 2
+	// can prefilter low/repo.
+	if obs, ok := d.store.GetStarObservation("low/repo"); !ok {
+		t.Errorf("low/repo observation missing; cache writeback must run for every hydration")
+	} else if obs.Stars != 5 {
+		t.Errorf("low/repo cached Stars = %d, want 5", obs.Stars)
+	} else if obs.ObservedAt.IsZero() {
+		t.Errorf("low/repo cached ObservedAt is zero; must be the hydration timestamp")
+	}
+	if obs, ok := d.store.GetStarObservation("high/repo"); !ok {
+		t.Errorf("high/repo observation missing")
+	} else if obs.Stars != 500 {
+		t.Errorf("high/repo cached Stars = %d, want 500", obs.Stars)
+	}
+}
+
+// TestDiscoverFromGHArchive_MinStarsPrefilter_WarmCache — cycle 2+: a
+// candidate whose cached stars are below MinStarsGate AND whose
+// observation is still fresh must be skipped before REST hydration. The
+// counter increments and the REST endpoint sees no call for that repo.
+func TestDiscoverFromGHArchive_MinStarsPrefilter_WarmCache(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{
+		"low/cached":  50, // pre-seeded below gate; must be prefiltered
+		"high/uncached": 50, // not in cache; must hydrate normally
+	})
+
+	var hydratedNames []string
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/repos/")
+		hydratedNames = append(hydratedNames, path)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(repoEntry(path, 500))
+	}))
+	t.Cleanup(rest.Close)
+
+	d := newPipelineDiscoverer(t, rest.URL, Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+			MinStarsGate:     100,
+			MinStarsCacheTTL: 24 * time.Hour,
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+
+	// Pre-seed a fresh cached observation below the gate. ObservedAt
+	// at "now" guarantees age=0 < TTL, so the prefilter must fire.
+	d.store.SetStarObservation("low/cached", state.StarObservation{
+		Stars:      5,
+		ObservedAt: time.Now(),
+	})
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+
+	for _, n := range hydratedNames {
+		if n == "low/cached" {
+			t.Errorf("hydrated %q despite warm cache below gate; prefilter must skip before REST", n)
+		}
+	}
+	if result.MinStarsPrefiltered != 1 {
+		t.Errorf("MinStarsPrefiltered = %d, want 1", result.MinStarsPrefiltered)
+	}
+	if result.NewRepos != 1 {
+		t.Errorf("NewRepos = %d, want 1 (only high/uncached should make it)", result.NewRepos)
+	}
+}
+
+// TestDiscoverFromGHArchive_MinStarsPrefilter_StaleEntry — a cached
+// observation older than MinStarsCacheTTL must NOT shadow the candidate.
+// The pipeline falls back to hydrating so a repo that has since gone
+// viral can be re-evaluated. The post-hydration gate still applies, and
+// the writeback refreshes the cache.
+func TestDiscoverFromGHArchive_MinStarsPrefilter_StaleEntry(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{"viral/repo": 100})
+
+	var hydratedNames []string
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/repos/")
+		hydratedNames = append(hydratedNames, path)
+		w.Header().Set("Content-Type", "application/json")
+		// Now well above the gate — the repo "went viral" since the
+		// stale observation was taken.
+		_ = json.NewEncoder(w).Encode(repoEntry(path, 750))
+	}))
+	t.Cleanup(rest.Close)
+
+	d := newPipelineDiscoverer(t, rest.URL, Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+			MinStarsGate:     100,
+			MinStarsCacheTTL: 1 * time.Hour, // tight window
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+
+	// Stale observation: 8 hours old, well past the 1h TTL. If the
+	// pipeline trusted it, we'd skip hydration and the repo would be
+	// permanently shadowed below 5 stars even though it's at 750 now.
+	staleTime := time.Now().Add(-8 * time.Hour)
+	d.store.SetStarObservation("viral/repo", state.StarObservation{
+		Stars:      5,
+		ObservedAt: staleTime,
+	})
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+
+	if len(hydratedNames) != 1 || hydratedNames[0] != "viral/repo" {
+		t.Errorf("hydratedNames = %v, want [viral/repo] (stale cache must fall through to hydrate)", hydratedNames)
+	}
+	if result.MinStarsPrefiltered != 0 {
+		t.Errorf("MinStarsPrefiltered = %d, want 0 (stale entry must not count as a prefilter hit)", result.MinStarsPrefiltered)
+	}
+	if result.NewRepos != 1 {
+		t.Errorf("NewRepos = %d, want 1 (repo is above gate post-hydration)", result.NewRepos)
+	}
+
+	// Cache must have been refreshed with the new observation.
+	obs, ok := d.store.GetStarObservation("viral/repo")
+	if !ok {
+		t.Fatalf("viral/repo observation missing after refresh")
+	}
+	if obs.Stars != 750 {
+		t.Errorf("refreshed Stars = %d, want 750", obs.Stars)
+	}
+	if !obs.ObservedAt.After(staleTime) {
+		t.Errorf("ObservedAt = %v, want strictly after the stale time %v", obs.ObservedAt, staleTime)
+	}
+}
+
+// TestDiscoverFromGHArchive_MinStarsPrefilter_GateOffNoSkip — when the
+// gate is off (MinStarsGate=0), the prefilter must NOT fire even with a
+// below-threshold cache entry: the gate's "off" state is the contract.
+// Cache writeback still happens so a later flip starts saving on cycle 2.
+func TestDiscoverFromGHArchive_MinStarsPrefilter_GateOffNoSkip(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{"low/cached": 50})
+
+	var hydratedNames []string
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/repos/")
+		hydratedNames = append(hydratedNames, path)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(repoEntry(path, 7))
+	}))
+	t.Cleanup(rest.Close)
+
+	d := newPipelineDiscoverer(t, rest.URL, Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+			MinStarsGate: 0, // off
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+
+	d.store.SetStarObservation("low/cached", state.StarObservation{
+		Stars: 5, ObservedAt: time.Now(),
+	})
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+
+	if len(hydratedNames) != 1 || hydratedNames[0] != "low/cached" {
+		t.Errorf("hydratedNames = %v, want [low/cached] (gate=0 must hydrate everything)", hydratedNames)
+	}
+	if result.MinStarsPrefiltered != 0 {
+		t.Errorf("MinStarsPrefiltered = %d, want 0 (gate=0 must not prefilter)", result.MinStarsPrefiltered)
+	}
+	if result.NewRepos != 1 {
+		t.Errorf("NewRepos = %d, want 1 (gate=0 lets low-star repo through)", result.NewRepos)
+	}
+
+	// Writeback must have updated the cache to the freshly-observed
+	// value (7) so a later gate flip benefits from cycle 1's hydration.
+	if obs, _ := d.store.GetStarObservation("low/cached"); obs.Stars != 7 {
+		t.Errorf("post-run cached Stars = %d, want 7 (writeback must overwrite stale value)", obs.Stars)
+	}
+}

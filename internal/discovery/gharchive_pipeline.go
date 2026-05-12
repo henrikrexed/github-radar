@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/hrexed/github-radar/internal/github"
+	"github.com/hrexed/github-radar/internal/state"
 )
 
 // gharchive_pipeline.go implements Story 2 of the Path C epic
@@ -58,16 +59,27 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 	if floor <= 0 {
 		floor = DefaultGHArchiveActivityFloor
 	}
+	// MinStarsCacheTTL governs the per-repo stargazer cache used by
+	// the pre-hydration prefilter (ISI-982). Zero falls back to the
+	// package default so an operator who only sets MinStarsGate still
+	// gets the bandwidth savings without having to learn a second
+	// knob.
+	cacheTTL := cfg.MinStarsCacheTTL
+	if cacheTTL <= 0 {
+		cacheTTL = DefaultGHArchiveMinStarsCacheTTL
+	}
+	now := time.Now()
 
 	result := &Result{
 		Topic:     "gharchive",
-		StartTime: time.Now(),
+		StartTime: now,
 		Repos:     []DiscoveredRepo{},
 	}
 
 	d.log("info", "Starting gharchive discovery",
 		"top_n", topN, "activity_floor", floor,
 		"min_stars_gate", cfg.MinStarsGate,
+		"min_stars_cache_ttl", cacheTTL,
 		"tracked_repos", d.ghArchive.TrackedRepoCount())
 
 	// TopActiveRepos applies the activity floor and N cap. The
@@ -108,6 +120,27 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 			continue
 		}
 
+		// Pre-hydration MinStarsGate prefilter (ISI-982). When the
+		// gate is on AND we have a fresh cached observation showing
+		// the repo below the gate, skip the REST call entirely.
+		// Failing-safe: a missing or stale entry falls through to
+		// the hydrate path so a previously-rejected repo that has
+		// since gone viral isn't permanently shadowed.
+		if cfg.MinStarsGate > 0 {
+			if obs, ok := d.store.GetStarObservation(fullName); ok {
+				age := now.Sub(obs.ObservedAt)
+				if age >= 0 && age < cacheTTL && obs.Stars < cfg.MinStarsGate {
+					result.MinStarsPrefiltered++
+					d.log("debug", "gharchive: min_stars_gate prefilter hit",
+						"repo", fullName,
+						"cached_stars", obs.Stars,
+						"gate", cfg.MinStarsGate,
+						"age", age)
+					continue
+				}
+			}
+		}
+
 		// Hydrate via core REST API (separate quota from Search
 		// API). Errors here are per-repo and shouldn't fail the
 		// whole gharchive step — log and skip the repo.
@@ -118,7 +151,22 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 			continue
 		}
 
-		// min_stars_gate — emergency throttle, off by default.
+		// Cache the freshly-observed stargazer count so the next
+		// cycle's prefilter can skip this repo when MinStarsGate is
+		// in effect. Written unconditionally — even when the gate is
+		// off — so flipping the gate later doesn't require a cold
+		// cycle to start saving REST calls. Also written for repos
+		// that the gate is about to reject, which is the whole point
+		// of the cache.
+		d.store.SetStarObservation(fullName, state.StarObservation{
+			Stars:      metrics.Stars,
+			ObservedAt: now,
+		})
+
+		// min_stars_gate — post-hydration enforcement. On cycle 2+
+		// the prefilter above shoulders most of this work; this
+		// branch handles cold-cache / stale-cache fallthroughs and
+		// the always-on post-filter semantics.
 		if cfg.MinStarsGate > 0 && metrics.Stars < cfg.MinStarsGate {
 			continue
 		}
@@ -161,7 +209,8 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 		"after_filters", result.AfterFilters,
 		"new", result.NewRepos,
 		"already_tracked", result.AlreadyTracked,
-		"excluded", result.Excluded)
+		"excluded", result.Excluded,
+		"min_stars_prefiltered", result.MinStarsPrefiltered)
 
 	return result, nil
 }

@@ -182,8 +182,19 @@ type DiscoveryGHArchiveConfig struct {
 	// MinStarsGate is an optional hard floor on stargazer count for
 	// gharchive-discovered candidates. Default 0 — disabled, lets
 	// event volume be the sole signal initially per ISI-950 Q3.
-	// Bound: >= 0.
+	// When non-zero the gate is enforced both pre-hydration (using
+	// the cached observation from state.Store) and post-hydration,
+	// so flipping it on actually sheds REST hydration cost from
+	// cycle 2 onward (ISI-982 follow-up). Bound: >= 0.
 	MinStarsGate int `yaml:"min_stars_gate"`
+	// MinStarsCacheTTLHours bounds the freshness window for the
+	// per-repo stargazer cache consulted by the MinStarsGate
+	// prefilter. Entries older than this are ignored and the
+	// pipeline falls back to hydrating, so a repo that has since
+	// gone viral isn't permanently shadowed by an old low-star
+	// reading. Default 168 (7 days) — matches the same order of
+	// magnitude as WindowHours. Bound: >= 0 (0 = use default).
+	MinStarsCacheTTLHours int `yaml:"min_stars_cache_ttl_hours"`
 	// DailyCapWarn is the yellow-signal threshold on candidates
 	// emitted per UTC day. The Dynatrace dashboard surfaces a warn
 	// state here; emission is NOT paused. Default 4000.
@@ -287,9 +298,10 @@ func DefaultConfig() *Config {
 						"PushEvent",
 						"PullRequestEvent",
 					},
-					MinStarsGate: 0,
-					DailyCapWarn: 4000,
-					DailyCapHard: 5000,
+					MinStarsGate:          0,
+					MinStarsCacheTTLHours: 168, // 7 days; matches DefaultGHArchiveMinStarsCacheTTL
+					DailyCapWarn:          4000,
+					DailyCapHard:          5000,
 				},
 			},
 		},
