@@ -399,18 +399,26 @@ repositories:
 	cli.Verbose = false
 	repoCmd := NewRepoCmd(cli)
 
-	// Capture stdout
+	// Capture stdout. List() may stream more than a pipe-buffer's worth of
+	// data (it reads the production state store and emits every discovered
+	// repo), so the reader must drain concurrently — otherwise the writer
+	// blocks in Encode and the test hangs at the 60s timeout.
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = buf.ReadFrom(r)
+		close(done)
+	}()
 
 	exitCode := repoCmd.List([]string{"--format", "json"})
 
 	w.Close()
 	os.Stdout = old
-
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	<-done
 	output := buf.String()
 
 	if exitCode != 0 {
@@ -444,18 +452,24 @@ repositories:
 	cli.Verbose = false
 	repoCmd := NewRepoCmd(cli)
 
-	// Capture stdout
+	// Capture stdout. See TestRepoCmd_List_JSONFormat for why the reader
+	// must drain concurrently — Flush blocks on a full pipe buffer otherwise.
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = buf.ReadFrom(r)
+		close(done)
+	}()
 
 	exitCode := repoCmd.List([]string{"--format", "csv"})
 
 	w.Close()
 	os.Stdout = old
-
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
+	<-done
 	output := buf.String()
 
 	if exitCode != 0 {
