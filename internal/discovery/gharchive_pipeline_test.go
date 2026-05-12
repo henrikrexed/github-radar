@@ -788,7 +788,7 @@ func TestDiscoverFromGHArchive_MinStarsPrefilter_ColdCache(t *testing.T) {
 // counter increments and the REST endpoint sees no call for that repo.
 func TestDiscoverFromGHArchive_MinStarsPrefilter_WarmCache(t *testing.T) {
 	src := gharchiveTestSource(t, map[string]int{
-		"low/cached":  50, // pre-seeded below gate; must be prefiltered
+		"low/cached":    50, // pre-seeded below gate; must be prefiltered
 		"high/uncached": 50, // not in cache; must hydrate normally
 	})
 
