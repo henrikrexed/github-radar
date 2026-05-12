@@ -14,22 +14,13 @@ import (
 // Two hooks are wired up here today:
 //
 //   - OnLagSeconds       → DiscoveryMeters.RecordLagSeconds
-//   - OnEventsProcessed  → DiscoveryMeters.AddEventsProcessed (scalar)
+//   - OnEventsProcessed  → DiscoveryMeters.AddEventsProcessed
+//     (one emission per event_type in the keptByType map, post-ISI-961)
 //
 // OnArchiveStart / OnArchiveComplete / OnArchiveError carry no spec
 // instrument today and stay unwired. If a future story adds an
 // archive-duration histogram or per-attempt error counter, this is the
 // composition point.
-//
-// Known gap: the events_processed_total counter is emitted with
-// event_type = metrics.EventTypeUnknown until the [ISI-961] hook
-// signature change lands (keptPerType map[string]int64). The dashboard
-// tile "Events processed by type" will render a single "unknown" row
-// under that arrangement — that's intentional, the alternative is to
-// leave the soak completely un-instrumented while we wait for ISI-961.
-// Once ISI-961 lands, swap to a range-over-map emission and the same
-// dashboard tile starts rendering one row per real event_type with no
-// further dashboard JSON change.
 
 // newGHArchiveDiscoveryHooks returns a discovery.GHArchiveHooks
 // populated with closures that emit telemetry via the supplied meters.
@@ -49,13 +40,14 @@ func newGHArchiveDiscoveryHooks(ctx context.Context, dm *metrics.DiscoveryMeters
 		OnLagSeconds: func(seconds float64) {
 			dm.RecordLagSeconds(ctx, seconds)
 		},
-		OnEventsProcessed: func(_ string, kept, _ int64) {
-			// Scalar `kept` cannot drive a per-event_type breakdown.
-			// Emit under the EventTypeUnknown sentinel so the counter
-			// still produces a stable series shape; ISI-961 will widen
-			// the signature to keptPerType and unblock the real
-			// breakdown without touching this file's call site.
-			dm.AddEventsProcessed(ctx, metrics.EventTypeUnknown, kept)
+		OnEventsProcessed: func(_ string, keptByType map[string]int64, _ int64) {
+			// Range over the per-event-type counts so the
+			// events_processed_total counter renders one series per
+			// real event_type. AddEventsProcessed skips zero-count
+			// emissions internally, so an empty/nil map is a no-op.
+			for eventType, count := range keptByType {
+				dm.AddEventsProcessed(ctx, eventType, count)
+			}
 		},
 	}
 }
