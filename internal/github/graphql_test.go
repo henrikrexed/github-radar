@@ -139,8 +139,12 @@ func TestBulkFetchMetadata_Batching(t *testing.T) {
 	client, _ := NewClient("tkn")
 	client.SetBaseURL(server.URL)
 
-	// 51 repos → 2 batches (50, 1)
-	repos := make([]Repo, 51)
+	// 51 repos × MaxGraphQLBatchSize=25 → 3 batches (25, 25, 1).
+	// Driven by the constant so the test tracks future re-tunes without
+	// hand-editing the expected count.
+	repoCount := MaxGraphQLBatchSize*2 + 1
+	wantBatches := (repoCount + MaxGraphQLBatchSize - 1) / MaxGraphQLBatchSize
+	repos := make([]Repo, repoCount)
 	for i := range repos {
 		repos[i] = Repo{Owner: "o", Name: "r" + itoa(i)}
 	}
@@ -148,11 +152,11 @@ func TestBulkFetchMetadata_Batching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BulkFetchMetadata: %v", err)
 	}
-	if out.QueryCount != 2 {
-		t.Errorf("QueryCount = %d, want 2", out.QueryCount)
+	if out.QueryCount != wantBatches {
+		t.Errorf("QueryCount = %d, want %d", out.QueryCount, wantBatches)
 	}
-	if calls != 2 {
-		t.Errorf("server saw %d calls, want 2", calls)
+	if calls != wantBatches {
+		t.Errorf("server saw %d calls, want %d", calls, wantBatches)
 	}
 }
 
@@ -247,12 +251,14 @@ func TestBulkFetchMetadata_BatchFailure_ContinuesPastBadBatch(t *testing.T) {
 		MaxDelay:   2 * time.Millisecond,
 	})
 
-	// Three batches: A (50), B (50, fails), C (5). 105 repos total.
-	repos := make([]Repo, 0, 105)
-	for i := 0; i < 50; i++ {
+	// Sized in terms of MaxGraphQLBatchSize so the test tracks future
+	// re-tunes of the constant: 1 batch each of A / B / C.
+	n := MaxGraphQLBatchSize
+	repos := make([]Repo, 0, 2*n+5)
+	for i := 0; i < n; i++ {
 		repos = append(repos, Repo{Owner: "A", Name: "r" + itoa(i)})
 	}
-	for i := 0; i < 50; i++ {
+	for i := 0; i < n; i++ {
 		repos = append(repos, Repo{Owner: "B", Name: "r" + itoa(i)})
 	}
 	for i := 0; i < 5; i++ {
@@ -269,9 +275,9 @@ func TestBulkFetchMetadata_BatchFailure_ContinuesPastBadBatch(t *testing.T) {
 	if len(out.FailedBatches) != 1 {
 		t.Fatalf("FailedBatches = %d, want 1", len(out.FailedBatches))
 	}
-	if out.FailedBatches[0].Start != 50 || out.FailedBatches[0].End != 100 {
-		t.Errorf("FailedBatches[0] = [%d,%d), want [50,100)",
-			out.FailedBatches[0].Start, out.FailedBatches[0].End)
+	if out.FailedBatches[0].Start != n || out.FailedBatches[0].End != 2*n {
+		t.Errorf("FailedBatches[0] = [%d,%d), want [%d,%d)",
+			out.FailedBatches[0].Start, out.FailedBatches[0].End, n, 2*n)
 	}
 	// Batches A and C must have surfaced their slugs in Metrics.
 	if _, ok := out.Metrics["A/r0"]; !ok {
@@ -378,6 +384,164 @@ func TestBulkFetchMetadata_RetryReplaysBody(t *testing.T) {
 	}
 	if !strings.Contains(env.Query, `r0: repository(owner: "a", name: "x")`) {
 		t.Errorf("replayed body missing query: %s", env.Query)
+	}
+}
+
+// TestBulkFetchMetadata_ResourceLimitsExceeded captures the ISI-983 production
+// failure: GitHub returns HTTP 200 with `data` partially populated (a handful
+// of leading aliases with full repo objects, the rest explicit `null`) and an
+// `errors` array containing one `RESOURCE_LIMITS_EXCEEDED` entry per
+// abandoned alias. The aliases were *not* missing repos — GitHub aborted the
+// per-query resource budget mid-document. Treating them as NotFound (which
+// the scanner logs as "Repo not found via graphql") silently mis-classifies
+// healthy public repos and corrupts the drain/exclude pipeline downstream.
+//
+// The batch must surface as a FailedBatches entry so the caller can retry
+// at smaller fan-out instead of poisoning per-repo state.
+func TestBulkFetchMetadata_ResourceLimitsExceeded(t *testing.T) {
+	// Build a 5-repo batch and let GitHub-fixture mimic the production wire
+	// shape: r0/r1 with real data, r2/r3/r4 as `null` with matching
+	// RESOURCE_LIMITS_EXCEEDED errors keyed by `path`.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"data": {
+				"r0": {
+					"nameWithOwner": "o/r0",
+					"stargazerCount": 1, "forkCount": 0,
+					"issues": {"totalCount": 0},
+					"pullRequests": {"totalCount": 0},
+					"primaryLanguage": null,
+					"repositoryTopics": {"nodes": []},
+					"description": ""
+				},
+				"r1": {
+					"nameWithOwner": "o/r1",
+					"stargazerCount": 2, "forkCount": 0,
+					"issues": {"totalCount": 0},
+					"pullRequests": {"totalCount": 0},
+					"primaryLanguage": null,
+					"repositoryTopics": {"nodes": []},
+					"description": ""
+				},
+				"r2": null,
+				"r3": null,
+				"r4": null
+			},
+			"errors": [
+				{"type": "RESOURCE_LIMITS_EXCEEDED", "message": "Resource limits for this query exceeded.", "path": ["r2", "nameWithOwner"]},
+				{"type": "RESOURCE_LIMITS_EXCEEDED", "message": "Resource limits for this query exceeded.", "path": ["r3", "nameWithOwner"]},
+				{"type": "RESOURCE_LIMITS_EXCEEDED", "message": "Resource limits for this query exceeded.", "path": ["r4", "mentionableUsers", "totalCount"]}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient("tkn")
+	client.SetBaseURL(server.URL)
+
+	repos := []Repo{
+		{Owner: "o", Name: "r0"}, // populated
+		{Owner: "o", Name: "r1"}, // populated
+		{Owner: "o", Name: "r2"}, // null + RESOURCE_LIMITS_EXCEEDED
+		{Owner: "o", Name: "r3"}, // null + RESOURCE_LIMITS_EXCEEDED
+		{Owner: "o", Name: "r4"}, // null + RESOURCE_LIMITS_EXCEEDED
+	}
+	out, err := client.BulkFetchMetadata(context.Background(), repos)
+	if err != nil {
+		t.Fatalf("BulkFetchMetadata: %v", err)
+	}
+
+	// The populated aliases must still surface as metrics — partial data is
+	// strictly more useful than nothing, and matches existing partial-error
+	// semantics.
+	if _, ok := out.Metrics["o/r0"]; !ok {
+		t.Errorf("expected partial metrics for o/r0 (it had a populated `data` slot)")
+	}
+	if _, ok := out.Metrics["o/r1"]; !ok {
+		t.Errorf("expected partial metrics for o/r1")
+	}
+
+	// The resource-limited aliases must NOT be reported as NotFound — they
+	// were never evaluated. NotFound triggers the scanner's
+	// "Repo not found via graphql" log line which is reserved for repos that
+	// actually disappeared from GitHub (deleted, renamed, made private).
+	for _, gone := range out.NotFound {
+		if gone == "o/r2" || gone == "o/r3" || gone == "o/r4" {
+			t.Errorf("alias hit by RESOURCE_LIMITS_EXCEEDED was mis-reported as NotFound: %s", gone)
+		}
+	}
+
+	// The batch must surface in FailedBatches so the caller can retry it
+	// (typically at a smaller fan-out on the next refresh tick) and so
+	// observability shows the real failure mode instead of a healthy stream
+	// of phantom NotFound entries.
+	if len(out.FailedBatches) != 1 {
+		t.Fatalf("expected exactly 1 FailedBatches entry (the resource-limited batch), got %d: %+v",
+			len(out.FailedBatches), out.FailedBatches)
+	}
+	if !strings.Contains(out.FailedBatches[0].Err.Error(), "RESOURCE_LIMITS_EXCEEDED") {
+		t.Errorf("FailedBatches[0].Err = %v, want one referencing RESOURCE_LIMITS_EXCEEDED",
+			out.FailedBatches[0].Err)
+	}
+}
+
+// TestBulkFetchMetadata_ResourceLimitsExceeded_NoPath is the defensive-sentinel
+// regression for ISI-983 review-L1: GitHub today always emits
+// `RESOURCE_LIMITS_EXCEEDED` errors keyed by `path[0]=alias`, but if it ever
+// emits one without a `path`, the alias map stays empty. The batch must still
+// surface as a FailedBatches entry instead of silently returning partial data
+// with no failure signal. We exercise the path that pairs `data: {}` with a
+// pathless RLE — the batch is empty, no aliases mapped, but the sentinel
+// must still fire the batch-level error.
+func TestBulkFetchMetadata_ResourceLimitsExceeded_NoPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"data": {"r0": null},
+			"errors": [
+				{"type": "RESOURCE_LIMITS_EXCEEDED", "message": "Resource limits for this query exceeded."}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient("tkn")
+	client.SetBaseURL(server.URL)
+
+	out, err := client.BulkFetchMetadata(context.Background(), []Repo{{Owner: "o", Name: "r0"}})
+	if err != nil {
+		t.Fatalf("BulkFetchMetadata: %v", err)
+	}
+
+	// Pathless RLE must NOT be misrouted as NotFound on the null alias --
+	// it's still a resource-exhaustion signal, not a missing repo.
+	if len(out.NotFound) != 0 {
+		t.Errorf("NotFound = %v, want empty (pathless RLE must not poison NotFound)", out.NotFound)
+	}
+	if len(out.FailedBatches) != 1 {
+		t.Fatalf("FailedBatches = %d, want 1 (sentinel must surface batch failure)", len(out.FailedBatches))
+	}
+	if !strings.Contains(out.FailedBatches[0].Err.Error(), "RESOURCE_LIMITS_EXCEEDED") {
+		t.Errorf("FailedBatches[0].Err = %v, want RESOURCE_LIMITS_EXCEEDED", out.FailedBatches[0].Err)
+	}
+	// Greppability guard: error message uses ASCII `--`, not U+2014 em-dash,
+	// so log-shippers/DQL contains-matchers see the same byte sequence we
+	// document in runbooks.
+	if strings.ContainsRune(out.FailedBatches[0].Err.Error(), '—') {
+		t.Errorf("FailedBatches[0].Err contains U+2014 em-dash, want ASCII `--`: %v", out.FailedBatches[0].Err)
+	}
+}
+
+// TestMaxGraphQLBatchSize_Bounded guards against silently raising the batch
+// size back into the resource-exhaustion zone surfaced by ISI-983.
+// Live-traffic probe (2026-05-11) against the post-ISI-765 fragment showed
+// that batch 50 returns 4-of-50 with the rest RESOURCE_LIMITS_EXCEEDED, while
+// batch ≤25 returns 25-of-25 with zero errors. We pin the constant to keep
+// the bulk path inside the safe envelope.
+func TestMaxGraphQLBatchSize_Bounded(t *testing.T) {
+	if MaxGraphQLBatchSize > 25 {
+		t.Errorf("MaxGraphQLBatchSize = %d; ISI-983 live probe showed the post-ISI-765 fragment exceeds GitHub's per-query resource limit above 25", MaxGraphQLBatchSize)
 	}
 }
 
