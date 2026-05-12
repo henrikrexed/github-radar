@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/hrexed/github-radar/internal/config"
 	"github.com/hrexed/github-radar/internal/discovery"
+	"github.com/hrexed/github-radar/internal/metrics"
 )
 
 // gharchive_wiring.go bridges the user-facing config block
@@ -97,13 +99,24 @@ func mapDiscoveryGHArchiveCollectorConfig(cfg config.DiscoveryGHArchiveConfig) d
 // underlying NewGHArchiveSource panics on a nil cursor store, so we
 // surface a clear error here instead.
 //
+// dm is the [ISI-955] discovery-meters registry. A nil value disables
+// gharchive discovery telemetry without affecting the source's data
+// flow — the source falls back to no-op hooks. Pass the meters built
+// from the same Exporter that the rest of the daemon uses so all
+// github_radar.* series share service.name + resource attributes.
+//
+// hookCtx is the lifetime context for the metric-emission closures.
+// Pass the daemon root context.
+//
 // The function is intentionally separate from daemon.New so it can be
 // exercised in unit tests with an in-memory cursor store
 // (see gharchive_wiring_test.go).
 func wireDiscoveryGHArchive(
+	hookCtx context.Context,
 	disc *discovery.Discoverer,
 	cfg config.DiscoveryGHArchiveConfig,
 	cursorStore discovery.GHArchiveCursorStore,
+	dm *metrics.DiscoveryMeters,
 ) error {
 	if disc == nil {
 		return fmt.Errorf("gharchive discovery wiring: nil Discoverer")
@@ -116,7 +129,8 @@ func wireDiscoveryGHArchive(
 	}
 
 	collectorCfg := mapDiscoveryGHArchiveCollectorConfig(cfg)
-	src := discovery.NewGHArchiveSource(collectorCfg, cursorStore, nil, discovery.GHArchiveHooks{})
+	hooks := newGHArchiveDiscoveryHooks(hookCtx, dm)
+	src := discovery.NewGHArchiveSource(collectorCfg, cursorStore, nil, hooks)
 	disc.SetGHArchiveSource(src)
 	return nil
 }
