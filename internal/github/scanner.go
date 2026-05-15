@@ -11,12 +11,12 @@ import (
 
 // Scanner orchestrates repository data collection with state persistence.
 type Scanner struct {
-	client              *Client
-	collector           *Collector
-	store               *state.Store
-	calculator          *scoring.Calculator
-	onLog               func(level, msg string, args ...interface{})
-	onBatchFallback     func(result string)
+	client          *Client
+	collector       *Collector
+	store           *state.Store
+	calculator      *scoring.Calculator
+	onLog           func(level, msg string, args ...interface{})
+	onBatchFallback func(result string)
 }
 
 // NewScanner creates a new scanner with the given client and state store.
