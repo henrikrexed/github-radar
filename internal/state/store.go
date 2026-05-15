@@ -30,10 +30,28 @@ const CurrentVersion = 1
 
 // State represents the persisted state of the scanner.
 type State struct {
-	Version   int                  `json:"version"`
-	LastScan  time.Time            `json:"last_scan"`
-	Repos     map[string]RepoState `json:"repos"`
-	Discovery DiscoveryState       `json:"discovery"`
+	Version  int                  `json:"version"`
+	LastScan time.Time            `json:"last_scan"`
+	Repos    map[string]RepoState `json:"repos"`
+	// StarObservations is a per-repo cache of the most recent stargazer
+	// count observed for a candidate (ISI-982). Distinct from `Repos`,
+	// which only holds repos the daemon has chosen to track: this map
+	// also remembers candidates that were hydrated by the gharchive
+	// pipeline but rejected by MinStarsGate, so a second hydration can
+	// be skipped on cycle 2+.
+	//
+	// Failing-safe: an absent entry means "unknown stars"; the
+	// pipeline must fall back to hydrating in that case.
+	StarObservations map[string]StarObservation `json:"star_observations,omitempty"`
+	Discovery        DiscoveryState             `json:"discovery"`
+}
+
+// StarObservation records a single stargazer-count snapshot for a
+// candidate repository, used by the gharchive pipeline's pre-hydration
+// MinStarsGate prefilter (ISI-982).
+type StarObservation struct {
+	Stars      int       `json:"stars"`
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 // RepoState contains persisted metrics for a single repository.
@@ -98,8 +116,9 @@ func NewStore(path string) *Store {
 	return &Store{
 		path: path,
 		state: &State{
-			Version: CurrentVersion,
-			Repos:   make(map[string]RepoState),
+			Version:          CurrentVersion,
+			Repos:            make(map[string]RepoState),
+			StarObservations: make(map[string]StarObservation),
 			Discovery: DiscoveryState{
 				KnownRepos: make(map[string]bool),
 				TopicScans: make(map[string]time.Time),
@@ -118,8 +137,9 @@ func (s *Store) Load() error {
 		if os.IsNotExist(err) {
 			// Initialize empty state
 			s.state = &State{
-				Version: CurrentVersion,
-				Repos:   make(map[string]RepoState),
+				Version:          CurrentVersion,
+				Repos:            make(map[string]RepoState),
+				StarObservations: make(map[string]StarObservation),
 				Discovery: DiscoveryState{
 					KnownRepos: make(map[string]bool),
 					TopicScans: make(map[string]time.Time),
@@ -138,6 +158,9 @@ func (s *Store) Load() error {
 	// Ensure maps are initialized
 	if state.Repos == nil {
 		state.Repos = make(map[string]RepoState)
+	}
+	if state.StarObservations == nil {
+		state.StarObservations = make(map[string]StarObservation)
 	}
 	if state.Discovery.KnownRepos == nil {
 		state.Discovery.KnownRepos = make(map[string]bool)
@@ -314,5 +337,33 @@ func (s *Store) SetDiscoveryLastScan(t time.Time) {
 	defer s.mu.Unlock()
 
 	s.state.Discovery.LastScan = t
+	s.modified = true
+}
+
+// GetStarObservation returns the most recent stargazer-count snapshot
+// recorded for a candidate repository. The second return value is false
+// when no observation has been recorded yet — callers must treat this
+// as "unknown" (failing-safe per ISI-982: fall back to hydrating).
+func (s *Store) GetStarObservation(fullName string) (StarObservation, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	obs, ok := s.state.StarObservations[fullName]
+	return obs, ok
+}
+
+// SetStarObservation records a stargazer-count snapshot for a candidate
+// repository (ISI-982). Intended to be called by the gharchive pipeline
+// after every successful REST hydration, including hydrations that are
+// later rejected by MinStarsGate — so the next discovery cycle can skip
+// the REST call entirely.
+func (s *Store) SetStarObservation(fullName string, obs StarObservation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.state.StarObservations == nil {
+		s.state.StarObservations = make(map[string]StarObservation)
+	}
+	s.state.StarObservations[fullName] = obs
 	s.modified = true
 }

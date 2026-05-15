@@ -283,6 +283,7 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 				"top_n_per_hour", cfg.Discovery.Sources.GHArchive.TopNPerHour,
 				"activity_floor", cfg.Discovery.Sources.GHArchive.ActivityFloor,
 				"min_stars_gate", cfg.Discovery.Sources.GHArchive.MinStarsGate,
+				"min_stars_cache_ttl_hours", cfg.Discovery.Sources.GHArchive.MinStarsCacheTTLHours,
 				"telemetry_enabled", dm != nil)
 		}
 	}

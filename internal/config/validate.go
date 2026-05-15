@@ -90,6 +90,9 @@ func (c *Config) Validate() error {
 	if ga.MinStarsGate < 0 {
 		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.min_stars_gate: must be >= 0, got %d", ga.MinStarsGate))
 	}
+	if ga.MinStarsCacheTTLHours < 0 {
+		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.min_stars_cache_ttl_hours: must be >= 0 (0 = use default 168), got %d", ga.MinStarsCacheTTLHours))
+	}
 	if ga.DailyCapWarn < 0 {
 		issues = append(issues, fmt.Sprintf("discovery.sources.gharchive.daily_cap_warn: must be >= 0 (0 = use default 4000), got %d", ga.DailyCapWarn))
 	}
