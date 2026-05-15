@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -71,6 +72,11 @@ func (c *Client) IsRateLimitExhausted() bool {
 		return exhausted
 	}
 
+	// Reset timestamp is in the past — the window has rolled over but we
+	// never observed the new header. Clear both Remaining and Limit to 0
+	// so IsRateLimitExhausted() returns false on the next check (it
+	// requires Limit > 0 to consider the state valid). This unblocks the
+	// daemon without waiting for the next API response to refresh headers.
 	c.mu.Lock()
 	if !c.rateLimit.Reset.IsZero() && c.rateLimit.Reset.Before(time.Now()) {
 		c.rateLimit.Remaining = 0
@@ -98,9 +104,13 @@ func (c *Client) TimeUntilReset() time.Duration {
 	return duration
 }
 
-// WaitForRateLimit blocks until the rate limit resets.
-// Returns immediately if rate limit is not exhausted.
-// Respects context cancellation.
+const rateLimitPollInterval = 30 * time.Second
+
+// WaitForRateLimit polls until the rate limit resets, checking every
+// rateLimitPollInterval (30 s). This replaces the previous single-shot
+// time.After that could block for 9+ minutes with zero log output
+// (ISI-1025 Issue 1). Each poll iteration logs the remaining wait so
+// operators can see active backoff in journalctl output.
 func (c *Client) WaitForRateLimit(ctx context.Context) error {
 	if !c.IsRateLimitExhausted() {
 		return nil
@@ -111,14 +121,48 @@ func (c *Client) WaitForRateLimit(ctx context.Context) error {
 		return nil
 	}
 
-	// Add a small buffer to ensure the reset has occurred
-	waitDuration += 5 * time.Second
+	deadline := time.Now().Add(waitDuration + 5*time.Second)
+	poll := rateLimitPollInterval
+	if waitDuration < poll {
+		poll = waitDuration
+	}
 
-	select {
-	case <-time.After(waitDuration):
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	slog.Info("rate limit exhausted, backing off until reset",
+		"wait_seconds", int(waitDuration.Seconds()),
+		"poll_interval", poll.String())
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+
+		if !c.IsRateLimitExhausted() {
+			slog.Info("rate limit refreshed, resuming")
+			return nil
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			slog.Warn("rate limit poll exceeded deadline; clearing stale state and resuming")
+			// Same clearing logic as IsRateLimitExhausted: set Limit=0 so
+			// the next IsRateLimitExhausted() call returns false, allowing
+			// the daemon to resume without blocking indefinitely.
+			c.mu.Lock()
+			c.rateLimit.Remaining = 0
+			c.rateLimit.Limit = 0
+			c.mu.Unlock()
+			return nil
+		}
+
+		next := rateLimitPollInterval
+		if remaining < next {
+			next = remaining
+		}
+		slog.Info("rate limit still exhausted, next poll",
+			"remaining_seconds", int(remaining.Seconds()))
+		poll = next
 	}
 }
 

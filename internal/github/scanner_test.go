@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -273,8 +274,14 @@ func TestScanner_Scan_PartialFailure(t *testing.T) {
 	if result.Successful != 1 {
 		t.Errorf("Successful = %d, want 1", result.Successful)
 	}
-	if result.Failed != 1 {
-		t.Errorf("Failed = %d, want 1", result.Failed)
+	if result.Failed != 0 {
+		t.Errorf("Failed = %d, want 0 (404 classified as repo_gone)", result.Failed)
+	}
+	if result.RepoGone != 1 {
+		t.Errorf("RepoGone = %d, want 1", result.RepoGone)
+	}
+	if len(result.GoneRepos) != 1 || result.GoneRepos[0] != "bad/repo" {
+		t.Errorf("GoneRepos = %v, want [bad/repo]", result.GoneRepos)
 	}
 
 	// Good repo should be in state
@@ -335,5 +342,130 @@ func TestScanner_Scan_StatePersisted(t *testing.T) {
 	}
 	if repoState.Stars != 100 {
 		t.Errorf("Stars = %d, want 100", repoState.Stars)
+	}
+}
+
+func TestScanner_Scan_RepoGoneClassification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message": "Not Found"}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient("test-token")
+	client.SetBaseURL(server.URL)
+
+	tmpDir := t.TempDir()
+	store := state.NewStore(filepath.Join(tmpDir, "state.json"))
+
+	scanner := NewScanner(client, store)
+	scanner.collector.SetCollectActivity(false)
+
+	repos := []Repo{
+		{Owner: "deleted", Name: "repo1"},
+		{Owner: "deleted", Name: "repo2"},
+	}
+	result, err := scanner.Scan(context.Background(), repos)
+
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+
+	if result.Total != 2 {
+		t.Errorf("Total = %d, want 2", result.Total)
+	}
+	if result.RepoGone != 2 {
+		t.Errorf("RepoGone = %d, want 2", result.RepoGone)
+	}
+	if result.Failed != 0 {
+		t.Errorf("Failed = %d, want 0 (deleted repos are repo_gone, not failed)", result.Failed)
+	}
+	if len(result.GoneRepos) != 2 {
+		t.Errorf("GoneRepos len = %d, want 2", len(result.GoneRepos))
+	}
+
+	for _, fn := range result.GoneRepos {
+		if !IsRepoNotFoundError(&RepoError{Repo: fn, Type: RepoErrorGone}) {
+			t.Errorf("GoneRepos entry %q should match IsRepoNotFoundError", fn)
+		}
+	}
+}
+
+func TestScanner_Scan_RepoGoneNotCountedAsFailed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/alive/repo"):
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"owner": {"login": "alive"},
+				"name": "repo",
+				"full_name": "alive/repo",
+				"stargazers_count": 10,
+				"forks_count": 1,
+				"open_issues_count": 0,
+				"language": "Go",
+				"topics": [],
+				"description": ""
+			}`))
+		case strings.HasSuffix(path, "/gone/repo"):
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not Found"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`[]`))
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient("test-token")
+	client.SetBaseURL(server.URL)
+
+	tmpDir := t.TempDir()
+	store := state.NewStore(filepath.Join(tmpDir, "state.json"))
+
+	scanner := NewScanner(client, store)
+	scanner.collector.SetCollectActivity(false)
+
+	repos := []Repo{
+		{Owner: "alive", Name: "repo"},
+		{Owner: "gone", Name: "repo"},
+	}
+	result, err := scanner.Scan(context.Background(), repos)
+
+	if err != nil {
+		t.Fatalf("Scan error: %v", err)
+	}
+
+	if result.Successful != 1 {
+		t.Errorf("Successful = %d, want 1", result.Successful)
+	}
+	if result.RepoGone != 1 {
+		t.Errorf("RepoGone = %d, want 1", result.RepoGone)
+	}
+	if result.Failed != 0 {
+		t.Errorf("Failed = %d, want 0 (repo_gone excluded from failed count)", result.Failed)
+	}
+}
+
+func TestIsRepoNotFoundError_MatchesGoneType(t *testing.T) {
+	tests := []struct {
+		name  string
+		err   error
+		match bool
+	}{
+		{"RepoErrorGone", &RepoError{Repo: "o/r", Type: RepoErrorGone, Message: "gone"}, true},
+		{"RepoErrorNotFound", &RepoError{Repo: "o/r", Type: RepoErrorNotFound, Message: "not found"}, true},
+		{"RepoErrorTransient", &RepoError{Repo: "o/r", Type: RepoErrorTransient, Message: "transient"}, false},
+		{"generic error", fmt.Errorf("something else"), false},
+		{"wrapped RepoErrorGone", fmt.Errorf("wrap: %w", &RepoError{Repo: "o/r", Type: RepoErrorGone, Message: "gone"}), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsRepoNotFoundError(tc.err)
+			if got != tc.match {
+				t.Errorf("IsRepoNotFoundError(%v) = %v, want %v", tc.err, got, tc.match)
+			}
+		})
 	}
 }
