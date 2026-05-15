@@ -124,7 +124,7 @@ func newTestDiscoverer(t *testing.T, src discovery.GHArchiveSourceConfig) *disco
 func TestWireDiscoveryGHArchive_DisabledIsNoOp(t *testing.T) {
 	d := newTestDiscoverer(t, discovery.GHArchiveSourceConfig{Enabled: false})
 
-	if err := wireDiscoveryGHArchive(context.Background(), d, config.DiscoveryGHArchiveConfig{Enabled: false}, discovery.NewMemoryCursorStore(), nil); err != nil {
+	if _, err := wireDiscoveryGHArchive(context.Background(), d, config.DiscoveryGHArchiveConfig{Enabled: false}, discovery.NewMemoryCursorStore(), nil); err != nil {
 		t.Fatalf("wireDiscoveryGHArchive(disabled) returned err = %v, want nil", err)
 	}
 
@@ -155,7 +155,7 @@ func TestWireDiscoveryGHArchive_EnabledRegistersSource(t *testing.T) {
 	// (NewDiscoverer copies the config block at construction time).
 	d := newTestDiscoverer(t, mapDiscoveryGHArchiveConfig(cfg))
 
-	if err := wireDiscoveryGHArchive(context.Background(), d, cfg, discovery.NewMemoryCursorStore(), nil); err != nil {
+	if _, err := wireDiscoveryGHArchive(context.Background(), d, cfg, discovery.NewMemoryCursorStore(), nil); err != nil {
 		t.Fatalf("wireDiscoveryGHArchive(enabled) returned err = %v, want nil", err)
 	}
 
@@ -179,7 +179,7 @@ func TestWireDiscoveryGHArchive_EnabledRegistersSource(t *testing.T) {
 // top level; the wiring helper must surface a clear error rather than
 // segfault.
 func TestWireDiscoveryGHArchive_NilDiscovererErrors(t *testing.T) {
-	err := wireDiscoveryGHArchive(context.Background(), nil, config.DiscoveryGHArchiveConfig{Enabled: true}, discovery.NewMemoryCursorStore(), nil)
+	_, err := wireDiscoveryGHArchive(context.Background(), nil, config.DiscoveryGHArchiveConfig{Enabled: true}, discovery.NewMemoryCursorStore(), nil)
 	if err == nil {
 		t.Fatal("wireDiscoveryGHArchive(nil disc) err = nil, want non-nil")
 	}
@@ -193,7 +193,7 @@ func TestWireDiscoveryGHArchive_NilDiscovererErrors(t *testing.T) {
 func TestWireDiscoveryGHArchive_NilCursorStoreErrors(t *testing.T) {
 	d := newTestDiscoverer(t, discovery.GHArchiveSourceConfig{Enabled: true})
 
-	err := wireDiscoveryGHArchive(context.Background(), d, config.DiscoveryGHArchiveConfig{Enabled: true}, nil, nil)
+	_, err := wireDiscoveryGHArchive(context.Background(), d, config.DiscoveryGHArchiveConfig{Enabled: true}, nil, nil)
 	if err == nil {
 		t.Fatal("wireDiscoveryGHArchive(nil cursorStore) err = nil, want non-nil")
 	}
