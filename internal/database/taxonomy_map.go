@@ -121,7 +121,10 @@ func LookupLegacyCategory(legacy string) TaxonomyPair {
 // Resolution rules:
 //
 //   - force_category set → category = ForceCategory, subcategory =
-//     ForceSubcategory, legacy = PrimaryCategoryLegacy (admin pin wins).
+//     ForceSubcategory, legacy = PrimaryCategoryLegacy. Note: the legacy-slug
+//     rollup below still applies — if ForceCategory is a legacy flat slug
+//     (e.g. "ai-agents"), it gets rolled up to the v3 top-level ("ai") so
+//     the admin pin stays within the closed-set cardinality guarantee.
 //   - otherwise → category = PrimaryCategory, subcategory =
 //     PrimarySubcategory, legacy = PrimaryCategoryLegacy.
 //   - if `category` matches a legacy flat slug from LegacyCategoryMap,

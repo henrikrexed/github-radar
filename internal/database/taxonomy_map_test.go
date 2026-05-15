@@ -134,6 +134,17 @@ func TestRepoRecord_ResolveTaxonomy(t *testing.T) {
 			wantCat: "cloud-native", wantSub: "observability", wantLegacy: "ai-agents",
 		},
 		{
+			name: "force_category set to legacy slug rolls up to v3 top-level (ISI-989 scope-add)",
+			r: RepoRecord{
+				PrimaryCategory:       "ai",
+				PrimarySubcategory:    "agents",
+				PrimaryCategoryLegacy: "",
+				ForceCategory:         "ai-agents",
+				ForceSubcategory:      "agents",
+			},
+			wantCat: "ai", wantSub: "agents", wantLegacy: "ai-agents",
+		},
+		{
 			name: "pre-v3 row: primary_category still holds legacy flat slug — collapses to v3 (cat, sub) and lifts legacy",
 			r: RepoRecord{
 				PrimaryCategory:       "ai-agents",
