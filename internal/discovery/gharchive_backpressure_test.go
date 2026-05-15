@@ -192,7 +192,7 @@ func TestBackpressureGate_QueueDepthPauseAndResume(t *testing.T) {
 		t.Fatalf("expected allow=true after drain")
 	}
 
-	pauses, resumes, _, _ = rec.snapshot()
+	_, resumes, _, _ = rec.snapshot()
 	if len(resumes) != 1 {
 		t.Fatalf("expected exactly 1 resume event after drain, got %d", len(resumes))
 	}
