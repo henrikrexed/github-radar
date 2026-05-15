@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -542,6 +543,129 @@ func TestBulkFetchMetadata_ResourceLimitsExceeded_NoPath(t *testing.T) {
 func TestMaxGraphQLBatchSize_Bounded(t *testing.T) {
 	if MaxGraphQLBatchSize > 25 {
 		t.Errorf("MaxGraphQLBatchSize = %d; ISI-983 live probe showed the post-ISI-765 fragment exceeds GitHub's per-query resource limit above 25", MaxGraphQLBatchSize)
+	}
+}
+
+func TestRetryFailedBatches_IndividualREST(t *testing.T) {
+	callCount := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("502"))
+			return
+		}
+		atomic.AddInt32(&callCount, 1)
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
+		if len(parts) < 2 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		owner, name := parts[0], parts[1]
+		switch owner {
+		case "ok":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"owner": {"login": "` + owner + `"},
+				"name": "` + name + `",
+				"full_name": "` + owner + `/` + name + `",
+				"stargazers_count": 42,
+				"forks_count": 5,
+				"open_issues_count": 1,
+				"language": "Go",
+				"topics": [],
+				"description": ""
+			}`))
+		case "gone":
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not Found"}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient("test-token")
+	client.SetBaseURL(server.URL)
+
+	repos := []Repo{
+		{Owner: "ok", Name: "repo1"},
+		{Owner: "ok", Name: "repo2"},
+		{Owner: "gone", Name: "repo3"},
+	}
+
+	bulkResult, _ := client.BulkFetchMetadata(context.Background(), repos)
+
+	if len(bulkResult.FailedBatches) == 0 {
+		t.Fatal("expected FailedBatches from 502 graphql response")
+	}
+
+	success, fail := client.RetryFailedBatches(context.Background(), repos, bulkResult)
+
+	if success != 2 {
+		t.Errorf("success = %d, want 2", success)
+	}
+	if fail != 1 {
+		t.Errorf("fail = %d, want 1 (gone repo)", fail)
+	}
+
+	if bulkResult.Metrics["ok/repo1"] == nil {
+		t.Error("ok/repo1 should have metrics after retry")
+	}
+	if bulkResult.Metrics["ok/repo2"] == nil {
+		t.Error("ok/repo2 should have metrics after retry")
+	}
+
+	var foundGone bool
+	for _, fn := range bulkResult.NotFound {
+		if fn == "gone/repo3" {
+			foundGone = true
+		}
+	}
+	if !foundGone {
+		t.Error("gone/repo3 should be in NotFound after retry")
+	}
+}
+
+func TestRetryFailedBatches_SkipsExisting(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"owner": {"login": "skip"},
+			"name": "repo",
+			"full_name": "skip/repo",
+			"stargazers_count": 10,
+			"forks_count": 1,
+			"open_issues_count": 0,
+			"language": "Go",
+			"topics": [],
+			"description": ""
+		}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient("test-token")
+	client.SetBaseURL(server.URL)
+
+	repos := []Repo{{Owner: "skip", Name: "repo"}}
+
+	bulkResult := &BulkFetchResult{
+		Metrics: map[string]*RepoMetrics{
+			"skip/repo": {Stars: 99},
+		},
+		FailedBatches: []BatchFailure{{Start: 0, End: 1, Err: fmt.Errorf("502")}},
+	}
+
+	success, fail := client.RetryFailedBatches(context.Background(), repos, bulkResult)
+
+	if success != 0 {
+		t.Errorf("success = %d, want 0 (already has metrics)", success)
+	}
+	if fail != 0 {
+		t.Errorf("fail = %d, want 0", fail)
 	}
 }
 

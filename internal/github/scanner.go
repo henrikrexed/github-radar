@@ -11,11 +11,12 @@ import (
 
 // Scanner orchestrates repository data collection with state persistence.
 type Scanner struct {
-	client     *Client
-	collector  *Collector
-	store      *state.Store
-	calculator *scoring.Calculator
-	onLog      func(level, msg string, args ...interface{})
+	client              *Client
+	collector           *Collector
+	store               *state.Store
+	calculator          *scoring.Calculator
+	onLog               func(level, msg string, args ...interface{})
+	onBatchFallback     func(result string)
 }
 
 // NewScanner creates a new scanner with the given client and state store.
@@ -38,6 +39,10 @@ func (s *Scanner) SetScoringWeights(weights scoring.Weights) {
 // SetLogger sets a logging callback.
 func (s *Scanner) SetLogger(fn func(level, msg string, args ...interface{})) {
 	s.onLog = fn
+}
+
+func (s *Scanner) SetBatchFallbackCallback(fn func(result string)) {
+	s.onBatchFallback = fn
 }
 
 func (s *Scanner) log(level, msg string, args ...interface{}) {
@@ -305,6 +310,23 @@ func (s *Scanner) ScanBulk(ctx context.Context, repos []Repo) (*ScanResult, erro
 			"failed_batches", n,
 			"partial_metrics", len(bulk.Metrics),
 			"first_error", bulk.FailedBatches[0].Err)
+
+		fbSuccess, fbFail := s.client.RetryFailedBatches(ctx, repos, bulk)
+		s.log("info", "Batch fallback retry complete",
+			"fallback_success", fbSuccess,
+			"fallback_fail", fbFail)
+		if s.onBatchFallback != nil {
+			if fbSuccess > 0 {
+				for i := 0; i < fbSuccess; i++ {
+					s.onBatchFallback("success")
+				}
+			}
+			if fbFail > 0 {
+				for i := 0; i < fbFail; i++ {
+					s.onBatchFallback("fail")
+				}
+			}
+		}
 	}
 
 	notFound := make(map[string]struct{}, len(bulk.NotFound))

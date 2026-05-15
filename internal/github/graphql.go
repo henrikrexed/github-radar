@@ -484,3 +484,47 @@ func extractActivityFromNode(node *graphqlRepoNode, now time.Time) (*ActivityMet
 	}
 	return metrics, mergedTruncated || issueTruncated
 }
+
+// RetryFailedBatches iterates over FailedBatches from a prior
+// BulkFetchMetadata call and retries each repo individually via the REST
+// API (GetRepository). Repos that already have metrics from partial-success
+// batches are skipped. Returns the number of successful and failed
+// individual retries.
+//
+// This is the ISI-1024 fallback: when a GraphQL batch request returns a
+// non-200 status (502, 503, etc.), the affected repos are not retried in
+// the legacy path because they are canary-excluded. Individual REST retry
+// ensures no repos are silently dropped.
+func (c *Client) RetryFailedBatches(ctx context.Context, repos []Repo, bulkResult *BulkFetchResult) (success, fail int) {
+	for _, fb := range bulkResult.FailedBatches {
+		for i := fb.Start; i < fb.End; i++ {
+			if i >= len(repos) {
+				break
+			}
+			repo := repos[i]
+			fullName := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+
+			if _, exists := bulkResult.Metrics[fullName]; exists {
+				continue
+			}
+
+			if err := ctx.Err(); err != nil {
+				return success, fail
+			}
+
+			metrics, err := c.GetRepository(ctx, repo.Owner, repo.Name)
+			if err != nil {
+				if IsAPINotFound(err) {
+					bulkResult.NotFound = append(bulkResult.NotFound, fullName)
+				}
+				fail++
+				continue
+			}
+			if metrics != nil {
+				bulkResult.Metrics[fullName] = metrics
+			}
+			success++
+		}
+	}
+	return success, fail
+}
