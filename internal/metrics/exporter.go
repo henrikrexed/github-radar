@@ -94,6 +94,9 @@ type Exporter struct {
 	gharchiveBytesDownloaded metric.Int64Counter
 	gharchiveDecodeDuration  metric.Float64Histogram
 	gharchiveEventsFiltered  metric.Int64Counter
+
+	batchFallbackCounter metric.Int64Counter
+	repoGoneCounter      metric.Int64Counter
 }
 
 // NewExporter creates a new metrics exporter.
@@ -450,6 +453,22 @@ func (e *Exporter) createInstruments() error {
 		return err
 	}
 
+	e.batchFallbackCounter, err = e.meter.Int64Counter("github.bulk_fetch.batch_fallback_total",
+		metric.WithDescription("Individual REST fallback attempts after a GraphQL batch failure, tagged by result=success|fail"),
+		metric.WithUnit("{attempts}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	e.repoGoneCounter, err = e.meter.Int64Counter("github.scan.repo_gone_total",
+		metric.WithDescription("Repos classified as deleted/renamed (repo_gone), excluded from error-rate gate"),
+		metric.WithUnit("{repos}"),
+	)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -743,4 +762,20 @@ func (e *Exporter) RecordGHArchiveEventsFiltered(ctx context.Context, kept bool,
 	e.gharchiveEventsFiltered.Add(ctx, count, metric.WithAttributes(
 		attribute.String("kept", keptStr),
 	))
+}
+
+func (e *Exporter) RecordBatchFallback(ctx context.Context, result string) {
+	if e == nil || e.batchFallbackCounter == nil {
+		return
+	}
+	e.batchFallbackCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("result", result),
+	))
+}
+
+func (e *Exporter) RecordRepoGone(ctx context.Context, count int) {
+	if e == nil || e.repoGoneCounter == nil {
+		return
+	}
+	e.repoGoneCounter.Add(ctx, int64(count))
 }
