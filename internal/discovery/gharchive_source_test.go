@@ -902,14 +902,12 @@ func TestProcessArchive_DropsOversizedLineGracefully(t *testing.T) {
 	archive := hour.Format(gharchiveArchiveLayout)
 
 	good := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "alice/before"}})
+	goodAfter := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "bob/after"}})
 
-	// One line whose JSON exceeds the 8 MiB cap. A long ASCII run
-	// inside a string compresses cheaply, so the gzipped archive
-	// stays small.
 	huge := strings.Repeat("x", 9*1024*1024)
 	oversized := []byte(`{"type":"PullRequestEvent","repo":{"name":"oversized/line"},"payload":{"filler":"` + huge + `"}}` + "\n")
 
-	body := gzipNDJSONRaw(t, [][]byte{good, oversized})
+	body := gzipNDJSONRaw(t, [][]byte{good, oversized, goodAfter})
 	srv := fakeArchiveServer(t, map[string][]byte{archive: body})
 	t.Cleanup(srv.Close)
 
@@ -931,20 +929,30 @@ func TestProcessArchive_DropsOversizedLineGracefully(t *testing.T) {
 	if got := atomic.LoadInt64(&discardedObs); got != 1 {
 		t.Errorf("discarded = %d, want 1 (oversized line counted once)", got)
 	}
+
 	top := src.TopActiveRepos(0, 1)
 	for _, r := range top {
 		if r.RepoName == "oversized/line" {
 			t.Errorf("oversized line repo unexpectedly aggregated: %+v", r)
 		}
+		if r.RepoName == "bob/after" {
+			t.Errorf("post-oversized tail repo unexpectedly aggregated (tail-loss contract violated): %+v", r)
+		}
 	}
+
 	var alice GHArchiveRepoActivity
+	found := false
 	for _, r := range top {
 		if r.RepoName == "alice/before" {
 			alice = r
+			found = true
 		}
 	}
-	if alice.RepoName != "alice/before" || alice.TotalEvents != 1 {
-		t.Errorf("alice/before = %+v, want 1 event", alice)
+	if !found {
+		t.Fatalf("alice/before not found in TopActiveRepos (top=%d results); kept=%d discarded=%d — tail-loss M2 contract", len(top), keptObs, discardedObs)
+	}
+	if alice.TotalEvents != 1 {
+		t.Errorf("alice/before events = %d, want 1", alice.TotalEvents)
 	}
 }
 
@@ -957,4 +965,57 @@ func mustMarshalLine(t *testing.T, v any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return append(raw, '\n')
+}
+
+func TestProcessArchive_MalformedLineAtEOFWithoutNewline(t *testing.T) {
+	hour := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	archive := hour.Format(gharchiveArchiveLayout)
+
+	good := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "alice/good"}})
+	malformed := []byte(`{"type":"not-valid-json`)
+
+	lines := [][]byte{good, malformed}
+	body := gzipNDJSONRaw(t, lines)
+	srv := fakeArchiveServer(t, map[string][]byte{archive: body})
+	t.Cleanup(srv.Close)
+
+	var keptObs int64
+	hooks := GHArchiveHooks{
+		OnEventsProcessed: func(_ string, k map[string]int64, d int64) {
+			atomic.StoreInt64(&keptObs, sumKeptByType(k))
+		},
+	}
+	src := newTestSource(t, srv.URL, hour.Add(2*time.Hour), NewMemoryCursorStore(), nil, hooks)
+
+	if err := src.ProcessArchive(context.Background(), archive); err != nil {
+		t.Fatalf("ProcessArchive: %v", err)
+	}
+	if got := atomic.LoadInt64(&keptObs); got != 1 {
+		t.Errorf("kept = %d, want 1 (good line before malformed EOF must aggregate)", got)
+	}
+}
+
+func TestProcessArchive_CtxCancellationMidStream(t *testing.T) {
+	hour := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
+	archive := hour.Format(gharchiveArchiveLayout)
+
+	line1 := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "alice/first"}})
+	line2 := mustMarshalLine(t, map[string]any{"type": "WatchEvent", "repo": map[string]any{"name": "bob/second"}})
+
+	body := gzipNDJSONRaw(t, [][]byte{line1, line2})
+	srv := fakeArchiveServer(t, map[string][]byte{archive: body})
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	src := newTestSource(t, srv.URL, hour.Add(2*time.Hour), NewMemoryCursorStore(), nil, GHArchiveHooks{})
+
+	err := src.ProcessArchive(ctx, archive)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
 }
