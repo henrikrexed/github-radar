@@ -952,3 +952,183 @@ func TestDiscoverFromGHArchive_MinStarsPrefilter_GateOffNoSkip(t *testing.T) {
 		t.Errorf("post-run cached Stars = %d, want 7 (writeback must overwrite stale value)", obs.Stars)
 	}
 }
+
+// TestDiscoverFromGHArchive_PipelineHooks_NilHooksNoPanic — nil hooks
+// must not panic. This is the AC: "nil hooks = source unchanged".
+func TestDiscoverFromGHArchive_PipelineHooks_NilHooksNoPanic(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{"a/repo": 50})
+	rest := fakeRESTServer(t, map[string]repoMetricsResponse{
+		"a/repo": repoEntry("a/repo", 100),
+	})
+	t.Cleanup(rest.Close)
+
+	d := newPipelineDiscoverer(t, rest.URL, Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+	// Intentionally NOT calling SetGHArchivePipelineHooks.
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+	if result.NewRepos != 1 {
+		t.Errorf("NewRepos = %d, want 1 (nil hooks must not change behaviour)", result.NewRepos)
+	}
+}
+
+// TestDiscoverFromGHArchive_PipelineHooks_OnCandidateAdmitted — verifies
+// that OnCandidateAdmitted fires once per candidate that passes the top-N +
+// activity-floor admission step, with the dominant event type.
+func TestDiscoverFromGHArchive_PipelineHooks_OnCandidateAdmitted(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{
+		"a/top":    100,
+		"a/second": 50,
+	})
+	rest := fakeRESTServer(t, map[string]repoMetricsResponse{
+		"a/top":    repoEntry("a/top", 1000),
+		"a/second": repoEntry("a/second", 500),
+	})
+	t.Cleanup(rest.Close)
+
+	var admittedEvents []string
+	d := newPipelineDiscoverer(t, rest.URL, Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+	d.SetGHArchivePipelineHooks(GHArchivePipelineHooks{
+		OnCandidateAdmitted: func(eventType string) {
+			admittedEvents = append(admittedEvents, eventType)
+		},
+	})
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+	if result.TotalFound != 2 {
+		t.Fatalf("TotalFound = %d, want 2", result.TotalFound)
+	}
+	if len(admittedEvents) != 2 {
+		t.Errorf("OnCandidateAdmitted calls = %d, want 2 (one per admitted candidate)", len(admittedEvents))
+	}
+	// All events in gharchiveTestSource are WatchEvent, so dominant type
+	// must be "WatchEvent" for each candidate.
+	for i, et := range admittedEvents {
+		if et != "WatchEvent" {
+			t.Errorf("admittedEvents[%d] = %q, want WatchEvent", i, et)
+		}
+	}
+}
+
+// TestDiscoverFromGHArchive_PipelineHooks_OnDedupComplete — verifies
+// that OnDedupComplete fires with the correct total/dropped counts after
+// the dedup pass.
+func TestDiscoverFromGHArchive_PipelineHooks_OnDedupComplete(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{
+		"a/tracked": 50,
+		"a/fresh":   50,
+		"a/also":    30,
+	})
+	rest := fakeRESTServer(t, map[string]repoMetricsResponse{
+		"a/fresh": repoEntry("a/fresh", 100),
+		"a/also":  repoEntry("a/also", 200),
+	})
+	t.Cleanup(rest.Close)
+
+	var dedupCalls []struct{ total, dropped int }
+	d := newPipelineDiscoverer(t, rest.URL, Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+	d.store.SetRepoState("a/tracked", state.RepoState{
+		Owner: "a", Name: "tracked", Stars: 5, LastCollected: time.Now(),
+	})
+	d.SetGHArchivePipelineHooks(GHArchivePipelineHooks{
+		OnDedupComplete: func(total, dropped int) {
+			dedupCalls = append(dedupCalls, struct{ total, dropped int }{total, dropped})
+		},
+	})
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+	if len(dedupCalls) != 1 {
+		t.Fatalf("OnDedupComplete calls = %d, want 1", len(dedupCalls))
+	}
+	if dedupCalls[0].total != 3 {
+		t.Errorf("total = %d, want 3", dedupCalls[0].total)
+	}
+	if dedupCalls[0].dropped != 1 {
+		t.Errorf("dropped = %d, want 1 (a/tracked)", dedupCalls[0].dropped)
+	}
+	if result.AlreadyTracked != 1 {
+		t.Errorf("AlreadyTracked = %d, want 1", result.AlreadyTracked)
+	}
+}
+
+// TestDiscoverFromGHArchive_PipelineHooks_EmptyCollectorNoDedupCall —
+// OnDedupComplete must NOT fire when the collector returns zero candidates
+// (TotalFound=0), because dividing by zero is meaningless and the spec
+// says "guard divide-by-zero".
+func TestDiscoverFromGHArchive_PipelineHooks_EmptyCollectorNoDedupCall(t *testing.T) {
+	src := gharchiveTestSource(t, map[string]int{}) // empty
+
+	var dedupCalled bool
+	d := newPipelineDiscoverer(t, "http://unused", Config{
+		Sources: SourcesConfig{GHArchive: GHArchiveSourceConfig{
+			Enabled: true, TopN: 10, ActivityFloor: 1,
+		}},
+		AutoTrackThreshold: 1000,
+	})
+	d.SetGHArchiveSource(src)
+	d.SetGHArchivePipelineHooks(GHArchivePipelineHooks{
+		OnDedupComplete: func(total, dropped int) {
+			dedupCalled = true
+		},
+	})
+
+	result, err := d.DiscoverFromGHArchive(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverFromGHArchive: %v", err)
+	}
+	if result.TotalFound != 0 {
+		t.Errorf("TotalFound = %d, want 0", result.TotalFound)
+	}
+	if dedupCalled {
+		t.Errorf("OnDedupComplete fired on empty collector; must not fire when total=0")
+	}
+}
+
+// TestDominantEventType covers the helper directly.
+func TestDominantEventType(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]int
+		want string
+	}{
+		{"nil", nil, ""},
+		{"empty", map[string]int{}, ""},
+		{"single", map[string]int{"WatchEvent": 10}, "WatchEvent"},
+		{"clear winner", map[string]int{"WatchEvent": 10, "ForkEvent": 3}, "WatchEvent"},
+		{"tie breaks lexicographic", map[string]int{"ForkEvent": 5, "PushEvent": 5}, "ForkEvent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dominantEventType(tc.in)
+			if got != tc.want {
+				t.Errorf("dominantEventType(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

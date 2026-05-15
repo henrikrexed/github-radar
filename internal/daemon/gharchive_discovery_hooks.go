@@ -40,13 +40,36 @@ func newGHArchiveDiscoveryHooks(ctx context.Context, dm *metrics.DiscoveryMeters
 		OnLagSeconds: func(seconds float64) {
 			dm.RecordLagSeconds(ctx, seconds)
 		},
+<<<<<<< HEAD
 		OnEventsProcessed: func(_ string, keptByType map[string]int64, _ int64) {
-			// Range over the per-event-type counts so the
-			// events_processed_total counter renders one series per
-			// real event_type. AddEventsProcessed skips zero-count
-			// emissions internally, so an empty/nil map is a no-op.
 			for eventType, count := range keptByType {
 				dm.AddEventsProcessed(ctx, eventType, count)
+			}
+		},
+	}
+}
+
+// newGHArchivePipelineHooks returns a discovery.GHArchivePipelineHooks
+// populated with closures that emit pipeline-level telemetry via the
+// supplied meters ([ISI-1005]). A nil DiscoveryMeters produces empty
+// hooks (no-ops).
+//
+// Two closures are wired:
+//   - OnCandidateAdmitted → DiscoveryMeters.AddCandidates(ctx, eventType, 1)
+//   - OnDedupComplete → computes ratio = dropped / total (guarding
+//     divide-by-zero), then DiscoveryMeters.RecordDedupRatio(ctx, ratio)
+func newGHArchivePipelineHooks(ctx context.Context, dm *metrics.DiscoveryMeters) discovery.GHArchivePipelineHooks {
+	if dm == nil {
+		return discovery.GHArchivePipelineHooks{}
+	}
+	return discovery.GHArchivePipelineHooks{
+		OnCandidateAdmitted: func(eventType string) {
+			dm.AddCandidates(ctx, eventType, 1)
+		},
+		OnDedupComplete: func(total, dropped int) {
+			if total > 0 {
+				ratio := float64(dropped) / float64(total)
+				dm.RecordDedupRatio(ctx, ratio)
 			}
 		},
 	}
