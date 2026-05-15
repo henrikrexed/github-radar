@@ -460,14 +460,13 @@ type RepoMetrics struct {
 	Language   string
 	Categories []string
 
-	// v3 taxonomy attributes (ISI-714 / ISI-786). Subcategory is the v3
-	// 2nd-level token. CategoryLegacy is the pre-migration flat slug
-	// (e.g. "ai-agents") emitted for the time-boxed 30-day backward-compat
-	// window. Both are emitted unconditionally — even when empty — so the
-	// dashboard sees a stable attribute shape across rows instead of
-	// silently-dropped dimensions.
-	Subcategory    string
-	CategoryLegacy string
+	// v3 taxonomy attribute (ISI-714). Subcategory is the v3 2nd-level token,
+	// emitted unconditionally — even when empty — so the dashboard sees a
+	// stable attribute shape across rows instead of silently-dropped
+	// dimensions. (The legacy flat slug used to be co-emitted as
+	// `category_legacy` under ISI-786's backward-compat window; the
+	// dependency gate in ISI-718 retired that emission — see ISI-989.)
+	Subcategory string
 
 	Stars        int
 	Forks        int
@@ -486,8 +485,8 @@ type RepoMetrics struct {
 
 // attributes builds the OTel attribute set for a RepoMetrics row. Extracted
 // from RecordRepoMetrics so the attribute shape (especially the v3 subcategory
-// + category_legacy emission added in ISI-786) can be asserted directly in
-// unit tests without standing up the full meter provider pipeline.
+// emission added in ISI-786) can be asserted directly in unit tests without
+// standing up the full meter provider pipeline.
 func (m RepoMetrics) attributes() []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("repo_owner", m.Owner),
@@ -511,15 +510,14 @@ func (m RepoMetrics) attributes() []attribute.KeyValue {
 		attrs = append(attrs, attribute.String("category", categoryStr))
 	}
 
-	// ISI-714 / ISI-786: emit v3 subcategory + legacy attributes unconditionally
-	// so every github.radar.* series carries a stable attribute shape during the
-	// 30-day backward-compat window. Gating these on non-empty would silently
-	// drop the dimension on rows that haven't been re-classified yet — the exact
-	// regression Observability Agent surfaced on the dev tenant.
-	attrs = append(attrs,
-		attribute.String("subcategory", m.Subcategory),
-		attribute.String("category_legacy", m.CategoryLegacy),
-	)
+	// ISI-714: emit the v3 subcategory attribute unconditionally so every
+	// github.radar.* series carries a stable attribute shape. Gating on
+	// non-empty would silently drop the dimension on rows that haven't been
+	// re-classified yet — the exact regression Observability Agent surfaced
+	// on the dev tenant. (The companion `category_legacy` attribute was
+	// retired in ISI-989 once the dashboards migrated to (category,
+	// subcategory) in ISI-718.)
+	attrs = append(attrs, attribute.String("subcategory", m.Subcategory))
 
 	return attrs
 }
