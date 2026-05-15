@@ -40,7 +40,6 @@ func newGHArchiveDiscoveryHooks(ctx context.Context, dm *metrics.DiscoveryMeters
 		OnLagSeconds: func(seconds float64) {
 			dm.RecordLagSeconds(ctx, seconds)
 		},
-<<<<<<< HEAD
 		OnEventsProcessed: func(_ string, keptByType map[string]int64, _ int64) {
 			for eventType, count := range keptByType {
 				dm.AddEventsProcessed(ctx, eventType, count)
