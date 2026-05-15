@@ -265,6 +265,7 @@ const (
 	RepoErrorPermanent
 	RepoErrorNotFound
 	RepoErrorRateLimit
+	RepoErrorGone
 )
 
 // RepoError wraps an error with repository context.

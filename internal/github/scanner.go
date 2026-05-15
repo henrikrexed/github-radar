@@ -60,7 +60,9 @@ type ScanResult struct {
 	Failed      int
 	Skipped     int
 	Updated     int
+	RepoGone    int
 	FailedRepos []string
+	GoneRepos   []string
 }
 
 // Repo represents a repository to scan.
@@ -102,9 +104,15 @@ func (s *Scanner) Scan(ctx context.Context, repos []Repo) (*ScanResult, error) {
 		collResult := s.collector.CollectRepoConditional(ctx, repo.Owner, repo.Name, cond)
 
 		if collResult.Error != nil {
-			result.Failed++
-			result.FailedRepos = append(result.FailedRepos, collResult.FullName)
-			s.log("warn", "Failed to collect repo", "repo", collResult.FullName, "error", collResult.Error)
+			if IsRepoNotFoundError(collResult.Error) {
+				result.RepoGone++
+				result.GoneRepos = append(result.GoneRepos, collResult.FullName)
+				s.log("info", "Repo not found (deleted/renamed), classified as repo_gone", "repo", collResult.FullName)
+			} else {
+				result.Failed++
+				result.FailedRepos = append(result.FailedRepos, collResult.FullName)
+				s.log("warn", "Failed to collect repo", "repo", collResult.FullName, "error", collResult.Error)
+			}
 			continue
 		}
 
@@ -133,6 +141,7 @@ func (s *Scanner) Scan(ctx context.Context, repos []Repo) (*ScanResult, error) {
 		"total", result.Total,
 		"successful", result.Successful,
 		"failed", result.Failed,
+		"repo_gone", result.RepoGone,
 		"skipped", result.Skipped,
 		"duration", result.EndTime.Sub(result.StartTime))
 
@@ -346,9 +355,9 @@ func (s *Scanner) ScanBulk(ctx context.Context, repos []Repo) (*ScanResult, erro
 		fullName := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
 
 		if _, gone := notFound[fullName]; gone {
-			result.Failed++
-			result.FailedRepos = append(result.FailedRepos, fullName)
-			s.log("warn", "Repo not found via graphql", "repo", fullName)
+			result.RepoGone++
+			result.GoneRepos = append(result.GoneRepos, fullName)
+			s.log("info", "Repo not found via graphql (deleted/renamed), classified as repo_gone", "repo", fullName)
 			continue
 		}
 
@@ -398,6 +407,7 @@ func (s *Scanner) ScanBulk(ctx context.Context, repos []Repo) (*ScanResult, erro
 		"total", result.Total,
 		"successful", result.Successful,
 		"failed", result.Failed,
+		"repo_gone", result.RepoGone,
 		"duration", result.EndTime.Sub(result.StartTime))
 	return result, nil
 }

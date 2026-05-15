@@ -243,7 +243,9 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 	// Install API telemetry observer so every HTTP round-trip emits
 	// OTel counters and the rate-limit gauge stays fresh (T5 / ISI-716).
 	if exp != nil {
-		client.SetAPIObserver(newAPIObserver(ctx, exp))
+		obs := newAPIObserver(ctx, exp)
+		client.SetAPIObserver(obs)
+		client.SetBatchFallbackObserver(obs)
 	}
 
 	// Wire the gharchive *discovery* source ([ISI-967], Path C epic
@@ -542,6 +544,11 @@ func (d *Daemon) runScan() {
 			d.exportMetrics()
 		}
 
+		// Record repo_gone counter (ISI-1025: excluded from error-rate gate).
+		if d.exporter != nil && result.RepoGone > 0 {
+			d.exporter.RecordRepoGone(d.ctx, result.RepoGone)
+		}
+
 		// Record cycle wallclock as a histogram. PM's T5 canary decision
 		// tree (ISI-792) gates on scan p95 latency >2× baseline; logging
 		// alone is not sufficient.
@@ -554,6 +561,7 @@ func (d *Daemon) runScan() {
 			"total", result.Total,
 			"successful", result.Successful,
 			"failed", result.Failed,
+			"repo_gone", result.RepoGone,
 			"skipped", result.Skipped,
 			"duration", scanDur)
 	} else if d.router != nil && d.router.IsFallbackActive() {
@@ -1172,7 +1180,9 @@ func (d *Daemon) runTieredScan(requested []github.Repo) (*github.ScanResult, err
 			combined.Failed += cr.Failed
 			combined.Skipped += cr.Skipped
 			combined.Updated += cr.Updated
+			combined.RepoGone += cr.RepoGone
 			combined.FailedRepos = append(combined.FailedRepos, cr.FailedRepos...)
+			combined.GoneRepos = append(combined.GoneRepos, cr.GoneRepos...)
 		}
 	}
 
@@ -1188,7 +1198,9 @@ func (d *Daemon) runTieredScan(requested []github.Repo) (*github.ScanResult, err
 			combined.Failed += br.Failed
 			combined.Skipped += br.Skipped
 			combined.Updated += br.Updated
+			combined.RepoGone += br.RepoGone
 			combined.FailedRepos = append(combined.FailedRepos, br.FailedRepos...)
+			combined.GoneRepos = append(combined.GoneRepos, br.GoneRepos...)
 		}
 	}
 
@@ -1232,7 +1244,9 @@ func (d *Daemon) runCanaryScan(repos []github.Repo) (*github.ScanResult, error) 
 			combined.Failed += cr.Failed
 			combined.Skipped += cr.Skipped
 			combined.Updated += cr.Updated
+			combined.RepoGone += cr.RepoGone
 			combined.FailedRepos = append(combined.FailedRepos, cr.FailedRepos...)
+			combined.GoneRepos = append(combined.GoneRepos, cr.GoneRepos...)
 		}
 	}
 
@@ -1248,7 +1262,9 @@ func (d *Daemon) runCanaryScan(repos []github.Repo) (*github.ScanResult, error) 
 			combined.Failed += lr.Failed
 			combined.Skipped += lr.Skipped
 			combined.Updated += lr.Updated
+			combined.RepoGone += lr.RepoGone
 			combined.FailedRepos = append(combined.FailedRepos, lr.FailedRepos...)
+			combined.GoneRepos = append(combined.GoneRepos, lr.GoneRepos...)
 		}
 	}
 
