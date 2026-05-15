@@ -113,6 +113,23 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 		Repos:     []DiscoveredRepo{},
 	}
 
+	// Backpressure gate ([ISI-954]) — checked before TopActiveRepos so
+	// a paused step does no work at all (no aggregate snapshot, no
+	// REST hydration). When the gate is unset (older daemon paths,
+	// unit tests not exercising backpressure) discovery runs unguarded.
+	if d.ghArchiveBackpressure != nil {
+		allow, reason, snap := d.ghArchiveBackpressure.CheckEntry()
+		if !allow {
+			d.log("info", "gharchive discovery paused by backpressure",
+				"reason", reason,
+				"queue_depth", snap.QueueDepth,
+				"rate_limit_pct", snap.RateLimitPct,
+				"daily_count", snap.DailyCount)
+			result.EndTime = time.Now()
+			return result, nil
+		}
+	}
+
 	d.log("info", "Starting gharchive discovery",
 		"top_n", topN, "activity_floor", floor,
 		"min_stars_gate", cfg.MinStarsGate,
@@ -240,6 +257,22 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 			result.AutoTracked++
 		}
 		result.Repos = append(result.Repos, discovered)
+
+		// Daily-cap counter ([ISI-954]). Counted after the candidate
+		// is committed to the result so the metric tracks "candidates
+		// shipped to the classifier" rather than "candidates the
+		// gharchive aggregate proposed". A hard-cap trip mid-cycle
+		// breaks the loop; the candidate that pushed us over is kept
+		// (RecordEmission already counted it) so accounting stays
+		// consistent on resume.
+		if d.ghArchiveBackpressure != nil {
+			if allow, reason := d.ghArchiveBackpressure.RecordEmission(); !allow {
+				d.log("info", "gharchive discovery hit daily cap mid-cycle",
+					"reason", reason,
+					"emitted_this_cycle", result.NewRepos)
+				break
+			}
+		}
 	}
 
 	d.normalizeScores(result)
