@@ -72,6 +72,11 @@ func (c *Client) IsRateLimitExhausted() bool {
 		return exhausted
 	}
 
+	// Reset timestamp is in the past — the window has rolled over but we
+	// never observed the new header. Clear both Remaining and Limit to 0
+	// so IsRateLimitExhausted() returns false on the next check (it
+	// requires Limit > 0 to consider the state valid). This unblocks the
+	// daemon without waiting for the next API response to refresh headers.
 	c.mu.Lock()
 	if !c.rateLimit.Reset.IsZero() && c.rateLimit.Reset.Before(time.Now()) {
 		c.rateLimit.Remaining = 0
@@ -141,6 +146,9 @@ func (c *Client) WaitForRateLimit(ctx context.Context) error {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			slog.Warn("rate limit poll exceeded deadline; clearing stale state and resuming")
+			// Same clearing logic as IsRateLimitExhausted: set Limit=0 so
+			// the next IsRateLimitExhausted() call returns false, allowing
+			// the daemon to resume without blocking indefinitely.
 			c.mu.Lock()
 			c.rateLimit.Remaining = 0
 			c.rateLimit.Limit = 0

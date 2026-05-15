@@ -92,8 +92,10 @@ func (c *Client) GetRepositoryConditional(ctx context.Context, owner, repo strin
 	defer condResp.Response.Body.Close()
 
 	if condResp.Response.StatusCode != http.StatusOK {
-		return nil, false, nil, fmt.Errorf("unexpected status %d for %s/%s",
-			condResp.Response.StatusCode, owner, repo)
+		return nil, false, nil, &APIError{
+			StatusCode: condResp.Response.StatusCode,
+			Message:    fmt.Sprintf("unexpected status for %s/%s", owner, repo),
+		}
 	}
 
 	var resp githubRepoResponse

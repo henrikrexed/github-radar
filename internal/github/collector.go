@@ -208,7 +208,7 @@ func (c *Collector) classifyError(owner, name string, err error) error {
 	if IsAPINotFound(err) {
 		return &RepoError{
 			Repo:    fullName,
-			Type:    RepoErrorNotFound,
+			Type:    RepoErrorGone,
 			Message: "repository not found (may be deleted or renamed)",
 			Err:     err,
 		}
@@ -218,7 +218,7 @@ func (c *Collector) classifyError(owner, name string, err error) error {
 	if IsNotFoundError(err) {
 		return &RepoError{
 			Repo:    fullName,
-			Type:    RepoErrorNotFound,
+			Type:    RepoErrorGone,
 			Message: "repository not found (may be deleted or renamed)",
 			Err:     err,
 		}
@@ -284,11 +284,12 @@ func (e *RepoError) Unwrap() error {
 	return e.Err
 }
 
-// IsRepoNotFoundError checks if an error indicates a repository was not found.
+// IsRepoNotFoundError checks if an error indicates a repository was not found
+// or confirmed gone (deleted/renamed).
 func IsRepoNotFoundError(err error) bool {
 	var repoErr *RepoError
 	if errors.As(err, &repoErr) {
-		return repoErr.Type == RepoErrorNotFound
+		return repoErr.Type == RepoErrorNotFound || repoErr.Type == RepoErrorGone
 	}
 	return false
 }

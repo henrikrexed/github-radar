@@ -104,8 +104,8 @@ func TestCollector_CollectRepo_NotFound(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected RepoError, got %T", receivedErr)
 	}
-	if repoErr.Type != RepoErrorNotFound {
-		t.Errorf("error type = %v, want RepoErrorNotFound", repoErr.Type)
+	if repoErr.Type != RepoErrorGone {
+		t.Errorf("error type = %v, want RepoErrorGone", repoErr.Type)
 	}
 }
 

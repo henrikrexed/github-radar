@@ -240,12 +240,9 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 		reloadChan: make(chan os.Signal, 1),
 	}
 
-	// Install API telemetry observer so every HTTP round-trip emits
-	// OTel counters and the rate-limit gauge stays fresh (T5 / ISI-716).
 	if exp != nil {
 		obs := newAPIObserver(ctx, exp)
 		client.SetAPIObserver(obs)
-		client.SetBatchFallbackObserver(obs)
 	}
 
 	// Wire the gharchive *discovery* source ([ISI-967], Path C epic
