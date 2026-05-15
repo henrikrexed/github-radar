@@ -755,13 +755,8 @@ func (s *GHArchiveSource) consume(ctx context.Context, hour time.Time, body io.R
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
-			// One line in this archive exceeds the 8 MiB cap. Drop
-			// it from the kept set, count it as discarded, and stop
-			// here: bufio.Scanner cannot recover past ErrTooLong, so
-			// any tail beyond the oversized line is lost — but the
-			// largest gharchive lines observed in practice are a few
-			// MiB at most, so the cap is effectively unreachable
-			// outside adversarial input.
+			logging.Warn("gharchive_source: dropping archive tail past oversized line",
+				"hour", hour, "discarded", discarded+1)
 			discarded++
 		} else {
 			return keptByType, discarded, nil, fmt.Errorf("scan archive: %w", err)
