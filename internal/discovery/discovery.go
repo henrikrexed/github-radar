@@ -235,6 +235,11 @@ type Discoverer struct {
 	// daemon has not enabled the gharchive source; DiscoverFromGHArchive
 	// returns nil in that case.
 	ghArchive *GHArchiveSource
+
+	// ghArchivePipelineHooks holds the pipeline-level telemetry callbacks
+	// ([ISI-1005]). Nil callbacks are no-ops. Set via
+	// SetGHArchivePipelineHooks by the daemon's wiring layer.
+	ghArchivePipelineHooks GHArchivePipelineHooks
 }
 
 // NewDiscoverer creates a new discoverer.
@@ -267,6 +272,14 @@ func (d *Discoverer) SetSearchThrottle(t time.Duration) {
 // flag.
 func (d *Discoverer) SetGHArchiveSource(src *GHArchiveSource) {
 	d.ghArchive = src
+}
+
+// SetGHArchivePipelineHooks wires the pipeline-level telemetry callbacks
+// ([ISI-1005]) into the Discoverer. The daemon calls this after
+// constructing the Discoverer and before any DiscoverAll cycle. Nil hooks
+// fields are individually safe (no-ops).
+func (d *Discoverer) SetGHArchivePipelineHooks(hooks GHArchivePipelineHooks) {
+	d.ghArchivePipelineHooks = hooks
 }
 
 // SetLogger sets a logging callback.

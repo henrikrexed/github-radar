@@ -122,20 +122,22 @@ func wireDiscoveryGHArchive(
 	cfg config.DiscoveryGHArchiveConfig,
 	cursorStore discovery.GHArchiveCursorStore,
 	dm *metrics.DiscoveryMeters,
-) error {
+) (*discovery.GHArchiveSource, error) {
 	if disc == nil {
-		return fmt.Errorf("gharchive discovery wiring: nil Discoverer")
+		return nil, fmt.Errorf("gharchive discovery wiring: nil Discoverer")
 	}
 	if !cfg.Enabled {
-		return nil
+		return nil, nil
 	}
 	if cursorStore == nil {
-		return fmt.Errorf("gharchive discovery wiring: cursor store is required when discovery.sources.gharchive.enabled=true")
+		return nil, fmt.Errorf("gharchive discovery wiring: cursor store is required when discovery.sources.gharchive.enabled=true")
 	}
 
 	collectorCfg := mapDiscoveryGHArchiveCollectorConfig(cfg)
 	hooks := newGHArchiveDiscoveryHooks(hookCtx, dm)
+	pipelineHooks := newGHArchivePipelineHooks(hookCtx, dm)
 	src := discovery.NewGHArchiveSource(collectorCfg, cursorStore, nil, hooks)
 	disc.SetGHArchiveSource(src)
-	return nil
+	disc.SetGHArchivePipelineHooks(pipelineHooks)
+	return src, nil
 }

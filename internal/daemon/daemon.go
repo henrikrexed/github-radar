@@ -75,6 +75,8 @@ type Daemon struct {
 	server     *http.Server
 	router     *metrics.Router
 
+	ghArchiveCollector *discovery.GHArchiveSource
+
 	mu              sync.RWMutex
 	status          Status
 	lastScan        time.Time
@@ -275,9 +277,11 @@ func New(cfg *config.Config, daemonCfg DaemonConfig) (*Daemon, error) {
 					dm = registered
 				}
 			}
-			if err := wireDiscoveryGHArchive(ctx, disc, cfg.Discovery.Sources.GHArchive, cursorStore, dm); err != nil {
+			ghArchiveSrc, err := wireDiscoveryGHArchive(ctx, disc, cfg.Discovery.Sources.GHArchive, cursorStore, dm)
+			if err != nil {
 				return nil, fmt.Errorf("wiring gharchive discovery source: %w", err)
 			}
+			d.ghArchiveCollector = ghArchiveSrc
 			logging.Info("gharchive discovery source enabled",
 				"window_hours", cfg.Discovery.Sources.GHArchive.WindowHours,
 				"top_n_per_hour", cfg.Discovery.Sources.GHArchive.TopNPerHour,
@@ -657,6 +661,12 @@ func (d *Daemon) logCycleSummary() {
 // runDiscovery runs topic-based discovery.
 func (d *Daemon) runDiscovery() {
 	logging.Info("starting discovery scan")
+
+	if d.ghArchiveCollector != nil {
+		if err := d.ghArchiveCollector.Run(d.ctx); err != nil && err != context.Canceled {
+			logging.Warn("gharchive discovery collector run failed", "error", err)
+		}
+	}
 
 	results, err := d.discoverer.DiscoverAll(d.ctx)
 	if err != nil && err != context.Canceled {

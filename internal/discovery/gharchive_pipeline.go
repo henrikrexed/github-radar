@@ -28,6 +28,43 @@ import (
 // a repo already surfaced by a more specific source is not double-
 // counted here.
 
+// GHArchivePipelineHooks is the pipeline-level callback surface for
+// observability ([ISI-1005]). Mirrors GHArchiveHooks in design: all
+// hooks are optional; nil callbacks are no-ops. Keeping the metric SDK
+// out of the discovery package keeps unit tests free of OTel setup.
+//
+// Hook emission points:
+//   - OnCandidateAdmitted fires once per repo that passes the top-N +
+//     activity-floor admission step (i.e., each entry from TopActiveRepos).
+//     eventType is the dominant event type from the candidate's window
+//     aggregate (empty when the aggregate has no per-type breakdown).
+//   - OnDedupComplete fires once after the dedup pass completes, carrying
+//     the total candidates admitted and how many were dropped as
+//     already-tracked.
+type GHArchivePipelineHooks struct {
+	OnCandidateAdmitted func(eventType string)
+	OnDedupComplete     func(total, dropped int)
+}
+
+// dominantEventType returns the event type with the highest count in
+// perType, or "" when the map is empty or nil. Used to attribute the
+// candidates_total counter to the event type that drove the candidate's
+// admission.
+func dominantEventType(perType map[string]int) string {
+	if len(perType) == 0 {
+		return ""
+	}
+	var best string
+	var bestN int
+	for t, n := range perType {
+		if n > bestN || (n == bestN && t < best) {
+			best = t
+			bestN = n
+		}
+	}
+	return best
+}
+
 // DiscoverFromGHArchive runs the gharchive event-stream discovery step.
 // Returns nil (with no error) when:
 //
@@ -88,6 +125,10 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 	result.TotalFound = len(candidates)
 
 	for _, act := range candidates {
+		if d.ghArchivePipelineHooks.OnCandidateAdmitted != nil {
+			d.ghArchivePipelineHooks.OnCandidateAdmitted(dominantEventType(act.PerEventType))
+		}
+
 		select {
 		case <-ctx.Done():
 			result.EndTime = time.Now()
@@ -203,6 +244,10 @@ func (d *Discoverer) DiscoverFromGHArchive(ctx context.Context) (*Result, error)
 
 	d.normalizeScores(result)
 	result.EndTime = time.Now()
+
+	if d.ghArchivePipelineHooks.OnDedupComplete != nil && result.TotalFound > 0 {
+		d.ghArchivePipelineHooks.OnDedupComplete(result.TotalFound, result.AlreadyTracked)
+	}
 
 	d.log("info", "gharchive discovery complete",
 		"found", result.TotalFound,
